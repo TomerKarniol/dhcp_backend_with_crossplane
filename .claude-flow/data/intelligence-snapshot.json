@@ -1,0 +1,110 @@
+[
+  {
+    "timestamp": 1774735312601,
+    "nodes": 13,
+    "edges": 6,
+    "pageRankSum": 1.0000000000000004,
+    "confidences": [
+      0.5,
+      0.5,
+      0.5,
+      0.53,
+      0.5,
+      0.5,
+      0.53,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5
+    ],
+    "accessCounts": [
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "topPatterns": [
+      {
+        "id": "mem-MEMORY-important-notes",
+        "summary": "Important Notes",
+        "confidence": 0.5,
+        "pageRank": 0.17073711145703757,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-MEMORY-pending--user-must-do-",
+        "summary": "Pending (user must do)",
+        "confidence": 0.5,
+        "pageRank": 0.15249258039302285,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-MEMORY-design-tokens",
+        "summary": "Design Tokens",
+        "confidence": 0.53,
+        "pageRank": 0.13102844844584668,
+        "accessCount": 1
+      },
+      {
+        "id": "mem-MEMORY-key-paths",
+        "summary": "Key Paths",
+        "confidence": 0.5,
+        "pageRank": 0.10577664907493517,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-MEMORY-stack",
+        "summary": "Stack",
+        "confidence": 0.5,
+        "pageRank": 0.0760687328859391,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-MEMORY-memory-files",
+        "summary": "Memory Files",
+        "confidence": 0.5,
+        "pageRank": 0.0760687328859391,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-MEMORY-project-memory",
+        "summary": "Project Memory",
+        "confidence": 0.53,
+        "pageRank": 0.041118249265325695,
+        "accessCount": 1
+      },
+      {
+        "id": "mem-MEMORY-status",
+        "summary": "Status",
+        "confidence": 0.5,
+        "pageRank": 0.041118249265325695,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-feedback_auto_accept----",
+        "summary": "---",
+        "confidence": 0.5,
+        "pageRank": 0.041118249265325695,
+        "accessCount": 0
+      },
+      {
+        "id": "mem-feedback_config_files----",
+        "summary": "---",
+        "confidence": 0.5,
+        "pageRank": 0.041118249265325695,
+        "accessCount": 0
+      }
+    ]
+  }
+]

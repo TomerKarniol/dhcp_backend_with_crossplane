@@ -1,0 +1,50 @@
+import json
+from app.models import DhcpExclusion, DhcpFailover, DhcpScopePayload
+
+
+def test_scope_payload_field_ordering(sample_scope_payload):
+    data = sample_scope_payload.model_dump(mode="json")
+    keys = list(data.keys())
+    expected_keys = [
+        "scopeName", "network", "subnetMask", "startRange", "endRange",
+        "leaseDurationDays", "description", "gateway", "dnsServers",
+        "dnsDomain", "exclusions", "failover",
+    ]
+    assert keys == expected_keys
+
+
+def test_empty_exclusions_not_null():
+    payload = DhcpScopePayload(
+        scopeName="Test", network="10.0.0.0", subnetMask="255.255.255.0",
+        startRange="10.0.0.1", endRange="10.0.0.254", leaseDurationDays=8,
+        description="", gateway="10.0.0.1", dnsServers=[], dnsDomain="",
+        exclusions=[], failover=None,
+    )
+    data = payload.model_dump(mode="json")
+    assert data["exclusions"] == []
+    assert data["exclusions"] is not None
+
+
+def test_null_failover_is_none(sample_scope_payload_no_failover):
+    data = sample_scope_payload_no_failover.model_dump(mode="json")
+    assert data["failover"] is None
+    serialized = json.dumps(data)
+    assert '"failover": null' in serialized
+
+
+def test_dns_servers_order_preserved(sample_scope_payload):
+    data = sample_scope_payload.model_dump(mode="json")
+    assert data["dnsServers"] == ["10.0.0.53", "10.0.0.54"]
+
+
+def test_lease_duration_is_int(sample_scope_payload):
+    data = sample_scope_payload.model_dump(mode="json")
+    assert isinstance(data["leaseDurationDays"], int)
+    assert data["leaseDurationDays"] == 8
+
+
+def test_failover_shared_secret_null(sample_failover):
+    data = sample_failover.model_dump(mode="json")
+    assert data["sharedSecret"] is None
+    serialized = json.dumps(data)
+    assert '"sharedSecret": null' in serialized

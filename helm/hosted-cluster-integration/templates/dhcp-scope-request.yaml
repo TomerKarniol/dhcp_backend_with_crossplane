@@ -1,0 +1,47 @@
+{{- if and .Values.dhcp_values .Values.dhcp_values.network -}}
+apiVersion: http.crossplane.io/v1alpha2
+kind: Request
+metadata:
+  name: dhcp-scope-{{ .Values.dhcp_values.network | replace "." "-" }}
+  namespace: {{ .Values.crossplane.namespace | default "crossplane-system" }}
+spec:
+  deletionPolicy: Delete
+  providerConfigRef:
+    name: dhcp-http
+  forProvider:
+    headers:
+      Content-Type:
+        - "application/json"
+      Accept:
+        - "application/json"
+
+    {{- if and .Values.apiServer .Values.apiServer.tokenSecretRef .Values.apiServer.tokenSecretRef.name }}
+    secretInjectionConfigs:
+      - secretRef:
+          name: {{ .Values.apiServer.tokenSecretRef.name }}
+          namespace: {{ .Values.apiServer.tokenSecretRef.namespace }}
+          key: {{ .Values.apiServer.tokenSecretRef.key }}
+        toFieldPath: "headers.Authorization[0]"
+        format: "Bearer %v"
+    {{- end }}
+
+    payload:
+      baseUrl: "{{ .Values.apiServer.url }}/api/v1/scopes"
+      body:
+        {{- include "dhcp.payload" . | nindent 8 }}
+
+    mappings:
+      - method: "POST"
+        url: (.payload.baseUrl + "/" + .payload.body.network)
+        body: .payload.body
+
+      - method: "GET"
+        url: (.payload.baseUrl + "/" + .payload.body.network)
+
+      - method: "PUT"
+        url: (.payload.baseUrl + "/" + .payload.body.network)
+        body: .payload.body
+
+      - method: "DELETE"
+        url: (.payload.baseUrl + "/" + .payload.body.network)
+{{- end }}

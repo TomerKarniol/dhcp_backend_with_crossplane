@@ -1,0 +1,101 @@
+crossplane:
+  namespace: crossplane-system
+
+apiServer:
+  url: https://dhcp-api.lab.local
+  tokenSecretRef:
+    name: dhcp-api-token
+    namespace: crossplane-system
+    key: token
+
+cluster:
+  name: tomer-hc
+  namespace: clusters
+  baseDomain: lab.local
+
+  release:
+    image: quay.io/openshift-release-dev/ocp-release:4.18.0-x86_64
+
+  pullSecret:
+    name: pull-secret
+
+  sshKey:
+    name: ssh-key
+
+  networking:
+    machineNetwork:
+      - cidr: 10.20.30.0/24
+    clusterNetwork:
+      - cidr: 10.132.0.0/14
+    serviceNetwork:
+      - cidr: 172.31.0.0/16
+
+  platform:
+    type: None
+
+crossplane:
+  namespace: crossplane-system
+
+apiServer:
+  url: https://dhcp-api.lab.local
+  tokenSecretRef:
+    name: dhcp-api-token
+    namespace: crossplane-system
+    key: token
+
+cluster:
+  name: tomer-hc
+  namespace: clusters
+  baseDomain: lab.local
+
+  release:
+    image: quay.io/openshift-release-dev/ocp-release:4.18.0-x86_64
+
+  pullSecret:
+    name: pull-secret
+
+  sshKey:
+    name: ssh-key
+
+  networking:
+    machineNetwork:
+      - cidr: 10.20.30.0/24
+    clusterNetwork:
+      - cidr: 10.132.0.0/14
+    serviceNetwork:
+      - cidr: 172.31.0.0/16
+
+  platform:
+    type: None
+
+dhcp_values:
+  scopeName: "tomer-hc-workers"
+  network: "10.20.30.0"
+  subnetMask: "255.255.255.0"
+  startRange: "10.20.30.11"
+  endRange: "10.20.30.240"
+  leaseDurationDays: 8
+  description: "DHCP scope for tomer hosted cluster"
+  gateway: "10.20.30.1"
+
+  dns:
+    servers:
+      - "10.50.1.5"
+      - "10.50.1.6"
+    domain: "tomer.lab.local"
+
+  exclusions:
+    - startAddress: "10.20.30.1"
+      endAddress: "10.20.30.10"
+    - startAddress: "10.20.30.241"
+      endAddress: "10.20.30.254"
+
+  failover:
+    partnerServer: "dhcp02.lab.local"
+    relationshipName: "tomer-hc-failover"
+    mode: "HotStandby"
+    serverRole: "Active"
+    reservePercent: 5
+    loadBalancePercent: 50
+    maxClientLeadTimeMinutes: 60
+    sharedSecret: null
