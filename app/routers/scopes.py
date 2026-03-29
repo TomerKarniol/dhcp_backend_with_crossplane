@@ -39,6 +39,24 @@ ScopeIdPath = Annotated[
 
 # Shared response descriptions re-used across multiple routes
 _RESPONSES_COMMON = {
+    status.HTTP_503_SERVICE_UNAVAILABLE: {
+        "description": (
+            "Runtime environment cannot support DHCP automation. "
+            "Returned when the server is running on an unsupported OS (Linux, macOS, WSL), "
+            "PowerShell is missing or non-functional, or DHCP cmdlets are unavailable. "
+            "The 'reason' field identifies the specific failure: "
+            "unsupported_os, wsl_detected, powershell_not_found, "
+            "powershell_exec_failed, or dhcp_cmdlets_unavailable."
+        ),
+        "content": {
+            "application/json": {
+                "example": {
+                    "detail": "WSL (Windows Subsystem for Linux) is not a supported runtime.",
+                    "reason": "wsl_detected",
+                }
+            }
+        },
+    },
     status.HTTP_401_UNAUTHORIZED: {
         "description": (
             "Missing or invalid bearer token. "
