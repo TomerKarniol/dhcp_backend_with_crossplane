@@ -206,12 +206,14 @@ def delete_scope(scope_id: str) -> None:
     except PowerShellError:
         return  # Already gone
 
-    # 1. Remove from failover
+    # 1. Remove from failover.
+    # Fail-hard: if we cannot detach the scope from its failover relationship we must NOT
+    # proceed to delete the scope.  Proceeding would leave an orphaned failover relationship
+    # that references a now-deleted scope — manual DHCP server cleanup would then be required
+    # before Crossplane can recreate the scope.  Raising here lets Crossplane retry the DELETE
+    # on the next reconciliation cycle, which is the safe behavior.
     if current.failover is not None:
-        try:
-            _remove_scope_from_failover(scope_id, current.failover.relationshipName)
-        except PowerShellError as e:
-            logger.warning("Failed to remove failover scope: %s", e.stderr)
+        _remove_scope_from_failover(scope_id, current.failover.relationshipName)
 
     # 2. Remove exclusion ranges
     for excl in current.exclusions:

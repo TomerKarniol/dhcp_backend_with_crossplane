@@ -44,7 +44,7 @@ def parse_failover(raw: dict) -> DhcpFailover:
         mode=raw.get("Mode", "HotStandby"),
         serverRole=raw.get("ServerRole", "Active"),
         reservePercent=int(raw.get("ReservePercent", 0)),
-        loadBalancePercent=int(raw.get("LoadBalancePercent", 50)),
+        loadBalancePercent=int(raw.get("LoadBalancePercent", 0)),
         maxClientLeadTimeMinutes=parse_timespan_minutes(
             str(raw.get("MaxClientLeadTime", "1:00:00"))
         ),

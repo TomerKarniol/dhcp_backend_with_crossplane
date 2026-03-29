@@ -1,4 +1,4 @@
-{{- if and .Values.dhcp_values .Values.dhcp_values.network -}}
+{{- if and .Values.dhcp_values .Values.dhcp_values.network .Values.dhcp_values.gateway -}}
 apiVersion: http.crossplane.io/v1alpha2
 kind: Request
 metadata:
@@ -15,14 +15,16 @@ spec:
       Accept:
         - "application/json"
 
-    {{- if and .Values.apiServer .Values.apiServer.tokenSecretRef .Values.apiServer.tokenSecretRef.name }}
+    {{- with .Values.apiServer.tokenSecretRef }}
+    {{- if and .name .namespace .key }}
     secretInjectionConfigs:
       - secretRef:
-          name: {{ .Values.apiServer.tokenSecretRef.name }}
-          namespace: {{ .Values.apiServer.tokenSecretRef.namespace }}
-          key: {{ .Values.apiServer.tokenSecretRef.key }}
+          name: {{ .name }}
+          namespace: {{ .namespace }}
+          key: {{ .key }}
         toFieldPath: "headers.Authorization[0]"
         format: "Bearer %v"
+    {{- end }}
     {{- end }}
 
     payload:

@@ -409,14 +409,104 @@ def test_end_range_is_broadcast_address_invalid():
 def test_failover_empty_shared_secret_invalid():
     """sharedSecret must be non-empty when present — use null, not empty string."""
     with pytest.raises(ValidationError):
-        from app.models import DhcpFailover
         DhcpFailover(
             partnerServer="dhcp02.lab.local",
             relationshipName="rel1",
             mode="HotStandby",
             serverRole="Active",
             reservePercent=5,
-            loadBalancePercent=50,
             maxClientLeadTimeMinutes=60,
             sharedSecret="",
         )
+
+
+# ---------------------------------------------------------------------------
+# DhcpFailover mode-specific field enforcement
+# ---------------------------------------------------------------------------
+
+def _failover(**overrides):
+    """Minimal valid HotStandby DhcpFailover."""
+    base = dict(
+        partnerServer="dhcp02.lab.local",
+        relationshipName="rel1",
+        mode="HotStandby",
+        serverRole="Active",
+        reservePercent=5,
+        maxClientLeadTimeMinutes=60,
+    )
+    base.update(overrides)
+    return DhcpFailover(**base)
+
+
+def test_hotstandby_requires_server_role():
+    """serverRole must be provided for HotStandby mode."""
+    with pytest.raises(ValidationError) as exc_info:
+        _failover(serverRole=None)
+    assert "serverRole" in str(exc_info.value)
+    assert "HotStandby" in str(exc_info.value)
+
+
+def test_hotstandby_normalizes_loadbalancepercent_to_zero():
+    """loadBalancePercent is not used in HotStandby — always normalized to 0."""
+    f = _failover(loadBalancePercent=75)
+    assert f.loadBalancePercent == 0
+
+
+def test_hotstandby_loadbalancepercent_omitted_normalizes_to_zero():
+    """loadBalancePercent omitted for HotStandby — must still serialize as 0."""
+    f = _failover()
+    assert f.loadBalancePercent == 0
+
+
+def test_loadbalance_requires_loadbalancepercent():
+    """loadBalancePercent must be provided for LoadBalance mode."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpFailover(
+            partnerServer="dhcp02.lab.local",
+            relationshipName="rel1",
+            mode="LoadBalance",
+            maxClientLeadTimeMinutes=60,
+        )
+    assert "loadBalancePercent" in str(exc_info.value)
+    assert "LoadBalance" in str(exc_info.value)
+
+
+def test_loadbalance_normalizes_serverrole_to_active():
+    """serverRole is not used in LoadBalance — always normalized to 'Active'."""
+    f = DhcpFailover(
+        partnerServer="dhcp02.lab.local",
+        relationshipName="rel1",
+        mode="LoadBalance",
+        loadBalancePercent=50,
+        serverRole="Standby",  # ignored — normalized to Active
+        maxClientLeadTimeMinutes=60,
+    )
+    assert f.serverRole == "Active"
+
+
+def test_loadbalance_normalizes_reservepercent_to_zero():
+    """reservePercent is not used in LoadBalance — always normalized to 0."""
+    f = DhcpFailover(
+        partnerServer="dhcp02.lab.local",
+        relationshipName="rel1",
+        mode="LoadBalance",
+        loadBalancePercent=60,
+        reservePercent=10,  # ignored — normalized to 0
+        maxClientLeadTimeMinutes=60,
+    )
+    assert f.reservePercent == 0
+
+
+def test_loadbalance_valid_full():
+    """A complete valid LoadBalance config must be accepted."""
+    f = DhcpFailover(
+        partnerServer="dhcp02.lab.local",
+        relationshipName="rel1",
+        mode="LoadBalance",
+        loadBalancePercent=50,
+        maxClientLeadTimeMinutes=60,
+    )
+    assert f.mode == "LoadBalance"
+    assert f.loadBalancePercent == 50
+    assert f.serverRole == "Active"
+    assert f.reservePercent == 0

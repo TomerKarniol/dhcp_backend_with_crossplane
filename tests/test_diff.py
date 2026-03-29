@@ -105,7 +105,6 @@ def _make_failover(**overrides):
         mode="HotStandby",
         serverRole="Active",
         reservePercent=5,
-        loadBalancePercent=50,
         maxClientLeadTimeMinutes=60,
         sharedSecret=None,
     )

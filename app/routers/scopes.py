@@ -33,7 +33,11 @@ ScopeIdPath = Annotated[
     Path(
         description="Scope ID — IPv4 network address of the DHCP scope",
         examples=["10.20.30.0"],
-        pattern=r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$",
+        # No regex pattern here — _validate_scope_id owns all validation and returns a
+        # consistent HTTP 400 for any invalid scope_id. Having both a pattern= and a custom
+        # validator produces inconsistent status codes: non-IP strings get 422 (framework
+        # pattern rejection) while out-of-range octets get 400 (custom validator). Clients
+        # and Crossplane must handle only one contract: 400 for invalid scope_id.
     ),
 ]
 
