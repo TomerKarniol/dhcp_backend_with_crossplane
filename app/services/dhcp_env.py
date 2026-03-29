@@ -21,6 +21,7 @@ import platform
 import shutil
 import subprocess
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -59,14 +60,20 @@ class DhcpEnvironmentError(Exception):
 _cache_lock = threading.Lock()
 _cache_ok: bool | None = None
 _cache_exc: DhcpEnvironmentError | None = None
+_cache_negative_until: float = 0.0
+
+# Transient startup failures (e.g. a brief PowerShell startup glitch) should not
+# cause permanent 503s for the process lifetime. Re-check after this interval.
+_NEGATIVE_CACHE_TTL_SECS: float = 30.0
 
 
 def _reset_validation_cache() -> None:
     """Reset the cached validation result.  For testing only."""
-    global _cache_ok, _cache_exc
+    global _cache_ok, _cache_exc, _cache_negative_until
     with _cache_lock:
         _cache_ok = None
         _cache_exc = None
+        _cache_negative_until = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -208,13 +215,19 @@ def validate_dhcp_environment() -> None:
     Raises:
         DhcpEnvironmentError: if any check fails.
     """
-    global _cache_ok, _cache_exc
+    global _cache_ok, _cache_exc, _cache_negative_until
 
     with _cache_lock:
         if _cache_ok is True:
             return
         if _cache_exc is not None:
-            raise _cache_exc
+            if time.monotonic() < _cache_negative_until:
+                raise _cache_exc
+            # TTL expired — clear negative cache and re-validate.
+            # Allows recovery from transient startup failures without process restart.
+            logger.info("DHCP environment negative cache expired — re-validating")
+            _cache_exc = None
+            _cache_ok = None
 
         # Run all checks inside the lock — prevents duplicate subprocess calls
         # under concurrent requests.  Subprocess timeout budget: 3 × 15s = 45s max.
@@ -228,6 +241,7 @@ def validate_dhcp_environment() -> None:
             )
             _cache_ok = False
             _cache_exc = exc
+            _cache_negative_until = time.monotonic() + _NEGATIVE_CACHE_TTL_SECS
             raise
 
         logger.info("DHCP environment validation passed — caching result")

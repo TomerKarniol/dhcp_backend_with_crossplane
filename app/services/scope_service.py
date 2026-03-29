@@ -40,11 +40,18 @@ def list_scopes() -> list[DhcpScopePayload]:
 
 
 def scope_exists(scope_id: str) -> bool:
+    """Return True if the scope exists. Raises PowerShellError for non-not-found failures.
+
+    Collapsing all PowerShell errors into False would mask permission errors and
+    transient failures, causing unsafe create/delete decisions on existing scopes.
+    """
     try:
         run_ps(f"Get-DhcpServerv4Scope -ScopeId {scope_id}")
         return True
-    except PowerShellError:
-        return False
+    except PowerShellError as e:
+        if _is_not_found_error(e.stderr):
+            return False
+        raise  # permission errors, transient failures — propagate, do not treat as "not found"
 
 
 def create_scope(payload: DhcpScopePayload) -> DhcpScopePayload:
@@ -86,7 +93,7 @@ def create_scope(payload: DhcpScopePayload) -> DhcpScopePayload:
                 parse_json=False,
             )
         except PowerShellError as e:
-            if "already" not in e.stderr.lower():
+            if not _is_already_exists_error(e.stderr):
                 raise
 
     # 4. Failover setup
@@ -201,22 +208,8 @@ def delete_scope(scope_id: str) -> None:
 
     # 1. Remove from failover
     if current.failover is not None:
-        rel_name = current.failover.relationshipName
         try:
-            run_ps(
-                f'Remove-DhcpServerv4FailoverScope -Name "{_ps_str(rel_name)}" '
-                f"-ScopeId {scope_id} -Force",
-                parse_json=False,
-            )
-            try:
-                rel = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
-                if rel and not rel.get("ScopeId"):
-                    run_ps(
-                        f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
-                        parse_json=False,
-                    )
-            except PowerShellError:
-                pass
+            _remove_scope_from_failover(scope_id, current.failover.relationshipName)
         except PowerShellError as e:
             logger.warning("Failed to remove failover scope: %s", e.stderr)
 
@@ -242,7 +235,36 @@ def delete_scope(scope_id: str) -> None:
 
 def _is_not_found_error(stderr: str) -> bool:
     lower = stderr.lower()
-    return any(kw in lower for kw in ("not found", "does not exist", "no dhcp scope"))
+    return any(kw in lower for kw in ("not found", "does not exist", "no dhcp scope", "cannot find"))
+
+
+def _is_already_exists_error(stderr: str) -> bool:
+    """Detect idempotent-safe 'already exists' errors by stable keyword set.
+
+    Substring matching on stderr is inherently fragile (locale, PS version). Keep the
+    set narrow and err on the side of propagating unrecognised errors rather than
+    silently swallowing them.
+    """
+    lower = stderr.lower()
+    return any(kw in lower for kw in ("already exists", "already been added", "already in use"))
+
+
+def _remove_scope_from_failover(scope_id: str, rel_name: str) -> None:
+    """Remove a scope from a failover relationship, deleting the relationship if now empty."""
+    run_ps(
+        f'Remove-DhcpServerv4FailoverScope -Name "{_ps_str(rel_name)}" '
+        f"-ScopeId {scope_id} -Force",
+        parse_json=False,
+    )
+    try:
+        rel = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
+        if rel and not rel.get("ScopeId"):
+            run_ps(
+                f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
+                parse_json=False,
+            )
+    except PowerShellError:
+        pass  # relationship already gone — idempotent
 
 
 def _setup_failover(scope_id: str, failover: DhcpFailover) -> None:
@@ -254,11 +276,15 @@ def _setup_failover(scope_id: str, failover: DhcpFailover) -> None:
         pass
 
     if existing:
-        run_ps(
-            f'Add-DhcpServerv4FailoverScope -Name "{_ps_str(failover.relationshipName)}" '
-            f"-ScopeId {scope_id}",
-            parse_json=False,
-        )
+        try:
+            run_ps(
+                f'Add-DhcpServerv4FailoverScope -Name "{_ps_str(failover.relationshipName)}" '
+                f"-ScopeId {scope_id}",
+                parse_json=False,
+            )
+        except PowerShellError as e:
+            if not _is_already_exists_error(e.stderr):
+                raise  # scope already in relationship is idempotent-safe; other errors are not
     else:
         _create_failover_relationship(scope_id, failover)
 
@@ -267,7 +293,7 @@ def _create_failover_relationship(scope_id: str, failover: DhcpFailover) -> None
     cmd = (
         f'Add-DhcpServerv4Failover '
         f'-Name "{_ps_str(failover.relationshipName)}" '
-        f'-PartnerServer {failover.partnerServer} '
+        f'-PartnerServer "{_ps_str(failover.partnerServer)}" '
         f'-ScopeId {scope_id} '
         f'-Mode {failover.mode} '
         f'-ServerRole {failover.serverRole} '
@@ -302,32 +328,44 @@ def _handle_failover_diff(
         return
 
     if current is not None and desired is None:
-        rel_name = current.relationshipName
-        run_ps(
-            f'Remove-DhcpServerv4FailoverScope -Name "{_ps_str(rel_name)}" -ScopeId {scope_id} -Force',
-            parse_json=False,
-        )
-        try:
-            rel = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
-            if rel and not rel.get("ScopeId"):
-                run_ps(
-                    f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
-                    parse_json=False,
-                )
-        except PowerShellError:
-            pass
+        _remove_scope_from_failover(scope_id, current.relationshipName)
         return
 
-    # Both exist — update params if changed
-    if (
+    # Both exist — check identity fields first.
+    # relationshipName, partnerServer, and serverRole are identity-level: they cannot be
+    # changed in-place on a live relationship. Changing them requires remove + recreate.
+    identity_changed = (
+        current.relationshipName != desired.relationshipName
+        or current.partnerServer != desired.partnerServer
+        or current.serverRole != desired.serverRole
+    )
+    if identity_changed:
+        logger.info(
+            "Scope %s: failover identity fields changed — removing relationship '%s' and recreating",
+            scope_id,
+            current.relationshipName,
+        )
+        _remove_scope_from_failover(scope_id, current.relationshipName)
+        _setup_failover(scope_id, desired)
+        run_ps(
+            f"Invoke-DhcpServerv4FailoverReplication -ScopeId {scope_id} -Force",
+            parse_json=False,
+        )
+        return
+
+    # Check mutable params (relationship is indexed by current.relationshipName which equals
+    # desired.relationshipName at this point — identity check above guarantees equality).
+    mutable_changed = (
         current.mode != desired.mode
         or current.reservePercent != desired.reservePercent
         or current.loadBalancePercent != desired.loadBalancePercent
         or current.maxClientLeadTimeMinutes != desired.maxClientLeadTimeMinutes
-    ):
+        or current.sharedSecret != desired.sharedSecret
+    )
+    if mutable_changed:
         logger.info("Scope %s: updating failover params", scope_id)
         cmd = (
-            f'Set-DhcpServerv4Failover -Name "{_ps_str(desired.relationshipName)}" '
+            f'Set-DhcpServerv4Failover -Name "{_ps_str(current.relationshipName)}" '
             f"-Mode {desired.mode} "
             f"-MaxClientLeadTime (New-TimeSpan -Minutes {desired.maxClientLeadTimeMinutes})"
         )
@@ -335,6 +373,10 @@ def _handle_failover_diff(
             cmd += f" -ReservePercent {desired.reservePercent}"
         else:
             cmd += f" -LoadBalancePercent {desired.loadBalancePercent}"
+        if desired.sharedSecret is not None:
+            cmd += f' -SharedSecret "{_ps_str(desired.sharedSecret)}"'
+        elif current.sharedSecret is not None:
+            cmd += ' -SharedSecret ""'  # clear existing secret
         run_ps(cmd, parse_json=False)
         run_ps(
             f"Invoke-DhcpServerv4FailoverReplication -ScopeId {scope_id} -Force",

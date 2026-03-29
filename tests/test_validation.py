@@ -370,3 +370,53 @@ def test_subnet_exclusion_end_outside_subnet():
             exclusions=[{"startAddress": "10.20.30.1", "endAddress": "10.20.31.10"}],
         ))
     assert "exclusions[0].endAddress" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Network/broadcast address role enforcement
+# ---------------------------------------------------------------------------
+
+def test_gateway_is_network_address_invalid():
+    """gateway must not be the network address."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(gateway="10.20.30.0"))
+    assert "gateway" in str(exc_info.value)
+    assert "network address" in str(exc_info.value).lower()
+
+
+def test_gateway_is_broadcast_address_invalid():
+    """gateway must not be the broadcast address."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(gateway="10.20.30.255"))
+    assert "gateway" in str(exc_info.value)
+    assert "broadcast address" in str(exc_info.value).lower()
+
+
+def test_start_range_is_network_address_invalid():
+    """startRange must not be the network address."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(startRange="10.20.30.0", endRange="10.20.30.200"))
+    assert "startRange" in str(exc_info.value)
+
+
+def test_end_range_is_broadcast_address_invalid():
+    """endRange must not be the broadcast address."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(endRange="10.20.30.255"))
+    assert "endRange" in str(exc_info.value)
+
+
+def test_failover_empty_shared_secret_invalid():
+    """sharedSecret must be non-empty when present — use null, not empty string."""
+    with pytest.raises(ValidationError):
+        from app.models import DhcpFailover
+        DhcpFailover(
+            partnerServer="dhcp02.lab.local",
+            relationshipName="rel1",
+            mode="HotStandby",
+            serverRole="Active",
+            reservePercent=5,
+            loadBalancePercent=50,
+            maxClientLeadTimeMinutes=60,
+            sharedSecret="",
+        )

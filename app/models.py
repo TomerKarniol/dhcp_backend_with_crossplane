@@ -59,8 +59,10 @@ class DhcpFailover(BaseModel):
     )
     sharedSecret: Optional[str] = Field(
         default=None,
+        min_length=1,
         max_length=256,
-        description="Shared secret for failover authentication. null = no authentication.",
+        description="Shared secret for failover authentication. null = no authentication. "
+                    "Empty string is not valid; use null to indicate no authentication.",
     )
 
 
@@ -161,5 +163,23 @@ class DhcpScopePayload(BaseModel):
                     raise ValueError(
                         f"exclusions[{i}].{attr} {ip} is not within subnet {subnet}"
                     )
+
+        # Reject network and broadcast addresses in dynamic-assignment and routing fields.
+        # These addresses are reserved: assigning them to gateway/range causes DHCP failure.
+        net_addr = subnet.network_address
+        bcast_addr = subnet.broadcast_address
+        for field, ip in [
+            ("gateway", self.gateway),
+            ("startRange", self.startRange),
+            ("endRange", self.endRange),
+        ]:
+            if ip == net_addr:
+                raise ValueError(
+                    f"{field} {ip} must not be the network address {net_addr}"
+                )
+            if ip == bcast_addr:
+                raise ValueError(
+                    f"{field} {ip} must not be the broadcast address {bcast_addr}"
+                )
 
         return self

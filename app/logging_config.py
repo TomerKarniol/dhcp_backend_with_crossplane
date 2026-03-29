@@ -1,5 +1,28 @@
+import json
 import logging
 import logging.config
+
+
+class _SafeJsonFormatter(logging.Formatter):
+    """Produce valid JSON log lines regardless of message content.
+
+    The previous approach used a %-format string to build JSON, which produced
+    unparsable output whenever the message contained double-quotes or newlines
+    (e.g. PowerShell stderr with embedded quotes). Using json.dumps guarantees
+    correct escaping for any message content.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "time": self.formatTime(record),
+                "level": record.levelname,
+                "name": record.name,
+                "msg": record.getMessage(),
+            },
+            ensure_ascii=False,
+            default=str,
+        )
 
 
 LOGGING_CONFIG = {
@@ -7,10 +30,7 @@ LOGGING_CONFIG = {
     "disable_existing_loggers": False,
     "formatters": {
         "json": {
-            "format": (
-                '{"time": "%(asctime)s", "level": "%(levelname)s", '
-                '"name": "%(name)s", "msg": "%(message)s"}'
-            ),
+            "()": _SafeJsonFormatter,
         }
     },
     "handlers": {

@@ -99,6 +99,42 @@ def test_put_scope_not_found():
     assert r.status_code == 404
 
 
+def test_put_scope_path_body_network_mismatch_returns_400():
+    """PUT must reject requests where path scope_id != body network.
+
+    Without this check, a Crossplane PUT to /scopes/10.20.30.0 with a body describing
+    10.20.40.0 would silently apply the wrong scope's settings to the path scope,
+    causing permanent reconciliation drift.
+    """
+    # Body must be self-consistent for 10.20.40.0 so Pydantic validation passes,
+    # then our path/body check fires and rejects with 400.
+    body = {
+        "scopeName": "Different Scope",
+        "network": "10.20.40.0",
+        "subnetMask": "255.255.255.0",
+        "startRange": "10.20.40.100",
+        "endRange": "10.20.40.200",
+        "leaseDurationDays": 8,
+        "description": "",
+        "gateway": "10.20.40.1",
+        "dnsServers": ["10.0.0.53"],
+        "dnsDomain": "lab.local",
+        "exclusions": [],
+        "failover": None,
+    }
+    r = client.put("/api/v1/scopes/10.20.30.0", json=body)
+    assert r.status_code == 400
+    assert "does not match" in r.json()["detail"]
+
+
+def test_put_scope_path_body_network_match_passes():
+    """PUT succeeds when path scope_id matches body network field."""
+    updated = _make_scope()
+    with patch("app.services.scope_service.update_scope", return_value=updated):
+        r = client.put("/api/v1/scopes/10.20.30.0", json=_make_scope_dict(network="10.20.30.0"))
+    assert r.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # DELETE
 # ---------------------------------------------------------------------------

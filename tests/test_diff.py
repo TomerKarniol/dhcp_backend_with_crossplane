@@ -210,3 +210,109 @@ def test_failover_unchanged_no_calls():
     ps_commands = [c.args[0] for c in calls if c.args]
     failover_cmds = [c for c in ps_commands if "Failover" in c]
     assert failover_cmds == []
+
+
+def test_failover_relationship_name_change_triggers_recreate():
+    """Changing relationshipName is an identity change — must remove + recreate, not Set."""
+    current = _make_scope(failover=_make_failover(relationshipName="old-rel"))
+    desired = _make_scope(failover=_make_failover(relationshipName="new-rel"))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope(current.network, desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    # Must remove from old relationship
+    assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands)
+    # Must NOT use Set-DhcpServerv4Failover (not a rename operation)
+    assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
+
+
+def test_failover_partner_server_change_triggers_recreate():
+    """Changing partnerServer is an identity change — must remove + recreate."""
+    current = _make_scope(failover=_make_failover(partnerServer="dhcp01.lab.local"))
+    desired = _make_scope(failover=_make_failover(partnerServer="dhcp02.lab.local"))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope(current.network, desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands)
+    assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
+
+
+def test_failover_shared_secret_change_triggers_update():
+    """Adding a sharedSecret is a mutable change — must use Set-DhcpServerv4Failover."""
+    current = _make_scope(failover=_make_failover(sharedSecret=None))
+    desired = _make_scope(failover=_make_failover(sharedSecret="new-secret"))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope(current.network, desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
+    # SharedSecret must appear in the update command
+    set_cmd = next(cmd for cmd in ps_commands if "Set-DhcpServerv4Failover" in cmd)
+    assert "-SharedSecret" in set_cmd
+
+
+def test_failover_shared_secret_not_logged_in_plain(caplog):
+    """Secret values must not appear in log output."""
+    import logging
+    current = _make_scope(failover=_make_failover(sharedSecret=None))
+    desired = _make_scope(failover=_make_failover(sharedSecret="super-secret-value"))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+        caplog.at_level(logging.INFO),
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope(current.network, desired)
+
+    # Secret value must NOT appear anywhere in captured log output
+    assert "super-secret-value" not in caplog.text
+
+
+def test_scope_exists_reraises_on_permission_error():
+    """scope_exists must not return False on permission errors — it must propagate."""
+    from app.services.scope_service import scope_exists
+    from app.services.ps_executor import PowerShellError
+
+    with patch(
+        "app.services.scope_service.run_ps",
+        side_effect=PowerShellError("Get-DhcpServerv4Scope", "Access is denied", 1),
+    ):
+        with pytest.raises(PowerShellError):
+            scope_exists("10.20.30.0")
+
+
+def test_scope_exists_returns_false_on_not_found():
+    """scope_exists returns False for legitimate not-found errors."""
+    from app.services.scope_service import scope_exists
+    from app.services.ps_executor import PowerShellError
+
+    with patch(
+        "app.services.scope_service.run_ps",
+        side_effect=PowerShellError("Get-DhcpServerv4Scope", "No DHCP scope found", 1),
+    ):
+        assert scope_exists("10.20.30.0") is False

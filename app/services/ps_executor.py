@@ -1,10 +1,19 @@
 import json
 import logging
+import re
 import subprocess
 
 from app.services import dhcp_env
 
 logger = logging.getLogger(__name__)
+
+# Matches -SharedSecret "..." (including empty string) for log redaction.
+_SECRET_RE = re.compile(r'(-SharedSecret\s+)"[^"]*"', re.IGNORECASE)
+
+
+def _redact_secrets(command: str) -> str:
+    """Remove sensitive parameter values from a command string before logging."""
+    return _SECRET_RE.sub(r'\1"***REDACTED***"', command)
 
 
 class PowerShellError(Exception):
@@ -36,14 +45,17 @@ def run_ps(command: str, parse_json: bool = True) -> dict | list | None:
     if parse_json:
         full_cmd += " | ConvertTo-Json -Depth 5 -Compress"
 
-    logger.info("PS> %s", command)
+    logger.info("PS> %s", _redact_secrets(command))
 
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", full_cmd],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", full_cmd],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        raise PowerShellError(command, "PowerShell command timed out after 60 seconds", -1)
 
     if result.returncode != 0:
         logger.error("PS FAILED (rc=%d): %s", result.returncode, result.stderr.strip())

@@ -25,13 +25,27 @@ def parse_timespan_minutes(ts: str) -> int:
     """Parse a PowerShell TimeSpan string to total minutes.
 
     Handles:
-      "1:00:00"  -> 60
-      "0:30:00"  -> 30
-      "1:30:00"  -> 90
+      "1:00:00"    -> 60    (HH:MM:SS)
+      "0:30:00"    -> 30
+      "1:30:00"    -> 90
+      "1.00:00:00" -> 1440  (d.HH:MM:SS — PowerShell emits this for values >= 24h)
+      "0.12:00:00" -> 720   (0 days 12 hours)
     """
-    parts = ts.split(":")
+    days = 0
+    time_part = ts
+    if "." in ts:
+        day_str, time_part = ts.split(".", 1)
+        try:
+            days = int(day_str)
+        except ValueError:
+            days = 0
+
+    parts = time_part.split(":")
     if len(parts) == 3:
-        hours = int(parts[0])
-        minutes = int(parts[1])
-        return hours * 60 + minutes
-    return 0
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            return days * 24 * 60 + hours * 60 + minutes
+        except ValueError:
+            pass
+    return days * 24 * 60

@@ -1,10 +1,26 @@
 import logging
+import re
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from app.services.dhcp_env import DhcpEnvironmentError
 from app.services.ps_executor import PowerShellError
 
 logger = logging.getLogger(__name__)
+
+# Matches Windows-style absolute paths (e.g. C:\Windows\...) to strip from client responses.
+_WIN_PATH_RE = re.compile(r'[A-Za-z]:\\[^\s,;]+')
+_MAX_PS_ERROR_LEN = 500
+
+
+def _sanitize_ps_stderr(stderr: str) -> str:
+    """Truncate and strip internal path details from PS stderr before returning to clients.
+
+    Raw PowerShell stderr can contain Windows file paths, hostnames, stack traces, and
+    policy details that leak infrastructure internals to API consumers.
+    Full stderr is preserved in server logs for operator diagnosis.
+    """
+    sanitized = _WIN_PATH_RE.sub("<path>", stderr)
+    return sanitized[:_MAX_PS_ERROR_LEN]
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -60,5 +76,5 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": str(exc), "ps_error": exc.stderr},
+            content={"detail": str(exc), "ps_error": _sanitize_ps_stderr(exc.stderr)},
         )

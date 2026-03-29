@@ -36,6 +36,22 @@ def test_parse_timespan_minutes_ninety():
     assert parse_timespan_minutes("1:30:00") == 90
 
 
+def test_parse_timespan_minutes_day_format_one_day():
+    """PowerShell emits d.HH:MM:SS for maxClientLeadTime >= 24h.
+    1.00:00:00 = 1 day = 1440 minutes — previously crashed with ValueError."""
+    assert parse_timespan_minutes("1.00:00:00") == 1440
+
+
+def test_parse_timespan_minutes_day_format_half_day():
+    """0 days 12 hours — verifies day + time combination."""
+    assert parse_timespan_minutes("0.12:00:00") == 720
+
+
+def test_parse_timespan_minutes_day_format_one_day_thirty():
+    """1 day 0 hours 30 minutes = 1470 minutes."""
+    assert parse_timespan_minutes("1.00:30:00") == 1470
+
+
 def test_ip_to_int_ordering():
     assert ip_to_int("10.20.30.0") < ip_to_int("10.20.40.0")
     assert ip_to_int("10.20.30.1") < ip_to_int("10.20.30.2")

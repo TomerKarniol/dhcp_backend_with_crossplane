@@ -358,6 +358,11 @@ def update_scope(
     scope_id: str = Depends(_validate_scope_id),
     _: None = Depends(_verify_token),
 ) -> DhcpScopePayload:
+    if str(payload.network) != scope_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"scope_id '{scope_id}' does not match network '{payload.network}' in body",
+        )
     logger.info("PUT /scopes/%s", scope_id)
     return scope_service.update_scope(scope_id, payload)
 
