@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hmac
 import logging
 from ipaddress import IPv4Address, AddressValueError
 from typing import Annotated
@@ -66,7 +67,8 @@ def _verify_token(authorization: str = Header(default="")) -> None:
     """Bearer token auth — only enforced when DHCP_API_TOKEN env var is set."""
     if not settings.DHCP_API_TOKEN:
         return
-    if authorization != f"Bearer {settings.DHCP_API_TOKEN}":
+    expected = f"Bearer {settings.DHCP_API_TOKEN}"
+    if not hmac.compare_digest(authorization, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
@@ -83,6 +85,46 @@ def _validate_scope_id(scope_id: ScopeIdPath) -> str:
             detail=f"Invalid scope ID '{scope_id}': each octet must be 0–255",
         )
     return scope_id
+
+
+# ---------------------------------------------------------------------------
+# GET /scopes  — list all scopes
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/scopes",
+    response_model=list[DhcpScopePayload],
+    status_code=status.HTTP_200_OK,
+    summary="List all DHCP scopes",
+    description="""
+Returns every DHCP scope on the Windows DHCP server as a list of canonical
+scope objects. Each element is structurally identical to the object returned
+by `GET /api/v1/scopes/{scope_id}` for that same scope.
+
+**Ordering**: scopes are sorted numerically by network address.
+
+**Error handling**: if any single scope cannot be assembled (PowerShell error,
+malformed cmdlet output, validation failure), the entire request fails with
+HTTP 500. Partial results are not returned; that would be misleading in an
+infrastructure API.
+
+**Read-only**: this route does not modify any DHCP state.
+""",
+    responses={
+        status.HTTP_200_OK: {
+            "description": (
+                "List of all scopes. Each element has the same shape as the "
+                "single-scope GET response. Returns an empty list if no scopes exist."
+            ),
+        },
+        **_RESPONSES_COMMON,
+    },
+)
+def list_scopes(
+    _: None = Depends(_verify_token),
+) -> list[DhcpScopePayload]:
+    logger.info("GET /scopes")
+    return scope_service.list_scopes()
 
 
 # ---------------------------------------------------------------------------

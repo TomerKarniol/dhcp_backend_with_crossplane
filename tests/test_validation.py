@@ -291,3 +291,82 @@ def test_scope_json_serialization_uses_strings(sample_scope_payload):
     assert isinstance(data["subnetMask"], str)
     assert all(isinstance(ip, str) for ip in data["dnsServers"])
     assert isinstance(data["exclusions"][0]["startAddress"], str)
+
+
+# ---------------------------------------------------------------------------
+# Subnet consistency validation
+# ---------------------------------------------------------------------------
+
+def _minimal_scope(**overrides):
+    """Minimal valid DhcpScopePayload for subnet tests."""
+    base = dict(
+        scopeName="Test",
+        network="10.20.30.0",
+        subnetMask="255.255.255.0",
+        startRange="10.20.30.100",
+        endRange="10.20.30.200",
+        leaseDurationDays=8,
+        description="",
+        gateway="10.20.30.1",
+        dnsServers=[],
+        dnsDomain="",
+        exclusions=[],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_subnet_valid_config_passes():
+    """A fully valid config must not raise."""
+    DhcpScopePayload(**_minimal_scope())
+
+
+def test_subnet_network_with_host_bits_invalid():
+    """network must be a network address — host bits must be zero."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(network="10.20.30.5"))
+    assert "valid subnet" in str(exc_info.value).lower()
+
+
+def test_subnet_non_contiguous_mask_invalid():
+    """subnetMask must be a contiguous prefix mask."""
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(subnetMask="255.255.0.255"))
+    assert "valid subnet" in str(exc_info.value).lower()
+
+
+def test_subnet_start_range_outside_subnet():
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(
+            startRange="10.20.31.100",
+            endRange="10.20.31.200",
+        ))
+    assert "startRange" in str(exc_info.value)
+
+
+def test_subnet_end_range_outside_subnet():
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(endRange="10.20.31.200"))
+    assert "endRange" in str(exc_info.value)
+
+
+def test_subnet_gateway_outside_subnet():
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(gateway="192.168.1.1"))
+    assert "gateway" in str(exc_info.value)
+
+
+def test_subnet_exclusion_start_outside_subnet():
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(
+            exclusions=[{"startAddress": "10.20.31.1", "endAddress": "10.20.31.10"}],
+        ))
+    assert "exclusions[0].startAddress" in str(exc_info.value)
+
+
+def test_subnet_exclusion_end_outside_subnet():
+    with pytest.raises(ValidationError) as exc_info:
+        DhcpScopePayload(**_minimal_scope(
+            exclusions=[{"startAddress": "10.20.30.1", "endAddress": "10.20.31.10"}],
+        ))
+    assert "exclusions[0].endAddress" in str(exc_info.value)

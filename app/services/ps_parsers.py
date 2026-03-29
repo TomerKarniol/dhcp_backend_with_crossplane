@@ -101,13 +101,13 @@ def assemble_scope_state(scope_id: str) -> DhcpScopePayload:
     )
 
     return DhcpScopePayload(
-        scopeName=str(scope.get("Name", "")),
+        scopeName=str(scope.get("Name") or ""),
         network=scope_id,
         subnetMask=str(scope.get("SubnetMask", "")),
         startRange=str(scope.get("StartRange", "")),
         endRange=str(scope.get("EndRange", "")),
         leaseDurationDays=lease_days,
-        description=str(scope.get("Description", "")),
+        description=str(scope.get("Description") or ""),
         gateway=extract_option(options, 3),
         dnsServers=extract_option_list(options, 6),
         dnsDomain=extract_option(options, 15),

@@ -4,9 +4,39 @@ from typing import Optional
 from fastapi import HTTPException, status
 from app.models import DhcpFailover, DhcpScopePayload
 from app.services.ps_executor import PowerShellError, run_ps
-from app.services.ps_parsers import assemble_scope_state
+from app.services.ps_parsers import assemble_scope_state, normalize_list
+from app.utils.ip_utils import ip_to_int
 
 logger = logging.getLogger(__name__)
+
+
+def _ps_str(value: str) -> str:
+    """Escape a string for safe insertion inside a PowerShell double-quoted string.
+
+    Escapes: backtick (PS escape char), dollar sign (variable expansion), double-quote (terminator).
+    """
+    return value.replace("`", "``").replace("$", "`$").replace('"', '`"')
+
+
+def list_scopes() -> list[DhcpScopePayload]:
+    """Return all DHCP scopes, each assembled via the same path as the single-scope GET.
+
+    Scopes are sorted numerically by network address for deterministic output.
+
+    Error strategy: fail-fast. If any scope cannot be assembled canonically (PowerShell
+    error, malformed output, validation failure), the entire request raises — callers see
+    HTTP 500. Partial-success lists would be misleading in an infrastructure API.
+    """
+    raw = run_ps("Get-DhcpServerv4Scope")
+    entries = normalize_list(raw)  # None → [], single dict → [dict], list → list
+
+    # Extract valid ScopeId values and sort numerically so output is deterministic
+    scope_ids: list[str] = sorted(
+        (str(e["ScopeId"]) for e in entries if e.get("ScopeId")),
+        key=ip_to_int,
+    )
+
+    return [assemble_scope_state(scope_id) for scope_id in scope_ids]
 
 
 def scope_exists(scope_id: str) -> bool:
@@ -25,13 +55,13 @@ def create_scope(payload: DhcpScopePayload) -> DhcpScopePayload:
         # 1. Create scope
         run_ps(
             f'Add-DhcpServerv4Scope '
-            f'-Name "{payload.scopeName}" '
+            f'-Name "{_ps_str(payload.scopeName)}" '
             f'-StartRange {payload.startRange} '
             f'-EndRange {payload.endRange} '
             f'-SubnetMask {payload.subnetMask} '
             f'-State Active '
             f'-LeaseDuration (New-TimeSpan -Days {payload.leaseDurationDays}) '
-            f'-Description "{payload.description}"',
+            f'-Description "{_ps_str(payload.description)}"',
             parse_json=False,
         )
     else:
@@ -43,7 +73,7 @@ def create_scope(payload: DhcpScopePayload) -> DhcpScopePayload:
         f"Set-DhcpServerv4OptionValue -ScopeId {scope_id} "
         f"-Router {payload.gateway} "
         f"-DnsServer {dns_str} "
-        f'-DnsDomain "{payload.dnsDomain}"',
+        f'-DnsDomain "{_ps_str(payload.dnsDomain)}"',
         parse_json=False,
     )
 
@@ -104,9 +134,9 @@ def update_scope(scope_id: str, desired: DhcpScopePayload) -> DhcpScopePayload:
         logger.info("Scope %s: updating params (name/lease/description)", scope_id)
         run_ps(
             f"Set-DhcpServerv4Scope -ScopeId {scope_id} "
-            f'-Name "{desired.scopeName}" '
+            f'-Name "{_ps_str(desired.scopeName)}" '
             f"-LeaseDuration (New-TimeSpan -Days {desired.leaseDurationDays}) "
-            f'-Description "{desired.description}"',
+            f'-Description "{_ps_str(desired.description)}"',
             parse_json=False,
         )
 
@@ -122,7 +152,7 @@ def update_scope(scope_id: str, desired: DhcpScopePayload) -> DhcpScopePayload:
             f"Set-DhcpServerv4OptionValue -ScopeId {scope_id} "
             f"-Router {desired.gateway} "
             f"-DnsServer {dns_str} "
-            f'-DnsDomain "{desired.dnsDomain}"',
+            f'-DnsDomain "{_ps_str(desired.dnsDomain)}"',
             parse_json=False,
         )
 
@@ -174,15 +204,15 @@ def delete_scope(scope_id: str) -> None:
         rel_name = current.failover.relationshipName
         try:
             run_ps(
-                f'Remove-DhcpServerv4FailoverScope -Name "{rel_name}" '
+                f'Remove-DhcpServerv4FailoverScope -Name "{_ps_str(rel_name)}" '
                 f"-ScopeId {scope_id} -Force",
                 parse_json=False,
             )
             try:
-                rel = run_ps(f'Get-DhcpServerv4Failover -Name "{rel_name}"')
+                rel = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
                 if rel and not rel.get("ScopeId"):
                     run_ps(
-                        f'Remove-DhcpServerv4Failover -Name "{rel_name}" -Force',
+                        f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
                         parse_json=False,
                     )
             except PowerShellError:
@@ -219,13 +249,13 @@ def _setup_failover(scope_id: str, failover: DhcpFailover) -> None:
     """Add a scope to a failover relationship, creating it if it doesn't exist yet."""
     existing = None
     try:
-        existing = run_ps(f'Get-DhcpServerv4Failover -Name "{failover.relationshipName}"')
+        existing = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(failover.relationshipName)}"')
     except PowerShellError:
         pass
 
     if existing:
         run_ps(
-            f'Add-DhcpServerv4FailoverScope -Name "{failover.relationshipName}" '
+            f'Add-DhcpServerv4FailoverScope -Name "{_ps_str(failover.relationshipName)}" '
             f"-ScopeId {scope_id}",
             parse_json=False,
         )
@@ -236,7 +266,7 @@ def _setup_failover(scope_id: str, failover: DhcpFailover) -> None:
 def _create_failover_relationship(scope_id: str, failover: DhcpFailover) -> None:
     cmd = (
         f'Add-DhcpServerv4Failover '
-        f'-Name "{failover.relationshipName}" '
+        f'-Name "{_ps_str(failover.relationshipName)}" '
         f'-PartnerServer {failover.partnerServer} '
         f'-ScopeId {scope_id} '
         f'-Mode {failover.mode} '
@@ -250,7 +280,7 @@ def _create_failover_relationship(scope_id: str, failover: DhcpFailover) -> None
         cmd += f" -LoadBalancePercent {failover.loadBalancePercent}"
 
     if failover.sharedSecret:
-        cmd += f' -SharedSecret "{failover.sharedSecret}"'
+        cmd += f' -SharedSecret "{_ps_str(failover.sharedSecret)}"'
 
     run_ps(cmd, parse_json=False)
 
@@ -274,14 +304,14 @@ def _handle_failover_diff(
     if current is not None and desired is None:
         rel_name = current.relationshipName
         run_ps(
-            f'Remove-DhcpServerv4FailoverScope -Name "{rel_name}" -ScopeId {scope_id} -Force',
+            f'Remove-DhcpServerv4FailoverScope -Name "{_ps_str(rel_name)}" -ScopeId {scope_id} -Force',
             parse_json=False,
         )
         try:
-            rel = run_ps(f'Get-DhcpServerv4Failover -Name "{rel_name}"')
+            rel = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
             if rel and not rel.get("ScopeId"):
                 run_ps(
-                    f'Remove-DhcpServerv4Failover -Name "{rel_name}" -Force',
+                    f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
                     parse_json=False,
                 )
         except PowerShellError:
@@ -297,7 +327,7 @@ def _handle_failover_diff(
     ):
         logger.info("Scope %s: updating failover params", scope_id)
         cmd = (
-            f'Set-DhcpServerv4Failover -Name "{desired.relationshipName}" '
+            f'Set-DhcpServerv4Failover -Name "{_ps_str(desired.relationshipName)}" '
             f"-Mode {desired.mode} "
             f"-MaxClientLeadTime (New-TimeSpan -Minutes {desired.maxClientLeadTimeMinutes})"
         )

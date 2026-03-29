@@ -131,3 +131,35 @@ class DhcpScopePayload(BaseModel):
                 f"endRange {self.endRange} must be >= startRange {self.startRange}"
             )
         return self
+
+    @model_validator(mode="after")
+    def validate_subnet_consistency(self) -> "DhcpScopePayload":
+        """Validate that network/subnetMask is a valid subnet and all IPs fall within it."""
+        from ipaddress import IPv4Network
+
+        # strict=True: raises if network has host bits set, or mask is non-contiguous
+        try:
+            subnet = IPv4Network(f"{self.network}/{self.subnetMask}", strict=True)
+        except ValueError as exc:
+            raise ValueError(
+                f"network {self.network} with subnetMask {self.subnetMask} "
+                f"is not a valid subnet: {exc}"
+            ) from exc
+
+        for field, ip in [
+            ("startRange", self.startRange),
+            ("endRange", self.endRange),
+            ("gateway", self.gateway),
+        ]:
+            if ip not in subnet:
+                raise ValueError(f"{field} {ip} is not within subnet {subnet}")
+
+        for i, excl in enumerate(self.exclusions):
+            for attr in ("startAddress", "endAddress"):
+                ip = getattr(excl, attr)
+                if ip not in subnet:
+                    raise ValueError(
+                        f"exclusions[{i}].{attr} {ip} is not within subnet {subnet}"
+                    )
+
+        return self

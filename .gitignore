@@ -37,3 +37,5 @@ dist/
 .DS_Store
 
 .claude-flow/
+
+CLAUDE.md

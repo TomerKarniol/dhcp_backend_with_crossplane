@@ -191,6 +191,168 @@ def test_invalid_scope_id_not_ip_returns_422():
     assert r.status_code in (400, 422)
 
 
+# ---------------------------------------------------------------------------
+# GET /scopes — list all scopes
+# ---------------------------------------------------------------------------
+
+def test_list_scopes_empty():
+    """Empty DHCP server must return 200 with an empty list."""
+    with patch("app.services.scope_service.list_scopes", return_value=[]):
+        r = client.get("/api/v1/scopes")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_list_scopes_single():
+    """Single scope is returned as a one-element list with the canonical shape."""
+    scope = _make_scope()
+    with patch("app.services.scope_service.list_scopes", return_value=[scope]):
+        r = client.get("/api/v1/scopes")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    # Verify all canonical top-level fields are present
+    for field in ("scopeName", "network", "subnetMask", "startRange", "endRange",
+                  "leaseDurationDays", "description", "gateway", "dnsServers",
+                  "dnsDomain", "exclusions", "failover"):
+        assert field in data[0], f"canonical field '{field}' missing from list item"
+
+
+def test_list_scopes_multiple():
+    """Multiple scopes are returned and the list has the expected length."""
+    scope_a = DhcpScopePayload(
+        scopeName="Scope-A", network="10.20.30.0", subnetMask="255.255.255.0",
+        startRange="10.20.30.100", endRange="10.20.30.200", leaseDurationDays=8,
+        description="", gateway="10.20.30.1", dnsServers=[], dnsDomain="",
+        exclusions=[], failover=None,
+    )
+    scope_b = DhcpScopePayload(
+        scopeName="Scope-B", network="10.20.31.0", subnetMask="255.255.255.0",
+        startRange="10.20.31.100", endRange="10.20.31.200", leaseDurationDays=8,
+        description="", gateway="10.20.31.1", dnsServers=[], dnsDomain="",
+        exclusions=[], failover=None,
+    )
+    with patch("app.services.scope_service.list_scopes", return_value=[scope_a, scope_b]):
+        r = client.get("/api/v1/scopes")
+    assert r.status_code == 200
+    assert len(r.json()) == 2
+
+
+def test_list_scopes_ps_error_returns_500():
+    """PowerShell failure during list must return 500 with ps_error field."""
+    with patch(
+        "app.services.scope_service.list_scopes",
+        side_effect=PowerShellError("Get-DhcpServerv4Scope", "Access denied", 1),
+    ):
+        r = client.get("/api/v1/scopes")
+    assert r.status_code == 500
+    body = r.json()
+    assert "ps_error" in body
+    assert body["ps_error"] == "Access denied"
+
+
+def test_list_scopes_sorted_numerically():
+    """Scopes must be sorted numerically by network address regardless of PS return order."""
+    from app.services.scope_service import list_scopes as svc_list_scopes
+
+    scope_30 = DhcpScopePayload(
+        scopeName="Scope-30", network="10.20.30.0", subnetMask="255.255.255.0",
+        startRange="10.20.30.100", endRange="10.20.30.200", leaseDurationDays=8,
+        description="", gateway="10.20.30.1", dnsServers=[], dnsDomain="",
+        exclusions=[], failover=None,
+    )
+    scope_9 = DhcpScopePayload(
+        scopeName="Scope-9", network="10.20.9.0", subnetMask="255.255.255.0",
+        startRange="10.20.9.100", endRange="10.20.9.200", leaseDurationDays=8,
+        description="", gateway="10.20.9.1", dnsServers=[], dnsDomain="",
+        exclusions=[], failover=None,
+    )
+    # "10.20.9.0" < "10.20.30.0" numerically but "10.20.30.0" < "10.20.9.0" lexicographically.
+    # Correct numeric sort must put 10.20.9.0 first.
+    raw_list = [{"ScopeId": "10.20.30.0"}, {"ScopeId": "10.20.9.0"}]
+
+    def fake_assemble(scope_id):
+        return scope_30 if scope_id == "10.20.30.0" else scope_9
+
+    with patch("app.services.scope_service.run_ps", return_value=raw_list), \
+         patch("app.services.scope_service.assemble_scope_state", side_effect=fake_assemble):
+        result = svc_list_scopes()
+
+    assert len(result) == 2
+    assert str(result[0].network) == "10.20.9.0",  "10.20.9.0 must sort before 10.20.30.0 numerically"
+    assert str(result[1].network) == "10.20.30.0"
+
+
+def test_list_scopes_item_shape_matches_single_scope_get(
+    mock_ps_scope_raw, mock_ps_options_raw, mock_ps_exclusions_raw
+):
+    """Each item from GET /scopes must be byte-for-byte identical to GET /scopes/{scope_id}."""
+    from app.services.ps_executor import PowerShellError as PSE
+
+    def fake_run_ps(cmd, parse_json=True):
+        # List call — no -ScopeId flag
+        if "Get-DhcpServerv4Scope" in cmd and "-ScopeId" not in cmd:
+            return [mock_ps_scope_raw]
+        if "Get-DhcpServerv4Scope" in cmd:
+            return mock_ps_scope_raw
+        if "Get-DhcpServerv4OptionValue" in cmd:
+            return mock_ps_options_raw
+        if "Get-DhcpServerv4ExclusionRange" in cmd:
+            return mock_ps_exclusions_raw
+        if "Get-DhcpServerv4Failover" in cmd:
+            raise PSE(cmd, "No failover configured", 1)
+        return None
+
+    with patch("app.services.scope_service.run_ps", side_effect=fake_run_ps), \
+         patch("app.services.ps_parsers.run_ps", side_effect=fake_run_ps):
+        list_r = client.get("/api/v1/scopes")
+        single_r = client.get("/api/v1/scopes/10.20.30.0")
+
+    assert list_r.status_code == 200
+    assert single_r.status_code == 200
+    list_items = list_r.json()
+    single_item = single_r.json()
+    assert len(list_items) == 1
+    assert list_items[0] == single_item, (
+        f"GET /scopes item differs from GET /scopes/{{scope_id}}!\n"
+        f"list[0]: {json.dumps(list_items[0])}\n"
+        f"single:  {json.dumps(single_item)}"
+    )
+
+
+def test_list_scopes_failover_null_consistent(
+    mock_ps_scope_raw, mock_ps_options_raw, mock_ps_exclusions_raw
+):
+    """failover: null in list items must match failover: null in single-scope GET."""
+    from app.services.ps_executor import PowerShellError as PSE
+
+    def fake_run_ps(cmd, parse_json=True):
+        if "Get-DhcpServerv4Scope" in cmd and "-ScopeId" not in cmd:
+            return [mock_ps_scope_raw]
+        if "Get-DhcpServerv4Scope" in cmd:
+            return mock_ps_scope_raw
+        if "Get-DhcpServerv4OptionValue" in cmd:
+            return mock_ps_options_raw
+        if "Get-DhcpServerv4ExclusionRange" in cmd:
+            return mock_ps_exclusions_raw
+        if "Get-DhcpServerv4Failover" in cmd:
+            raise PSE(cmd, "No failover configured", 1)
+        return None
+
+    with patch("app.services.scope_service.run_ps", side_effect=fake_run_ps), \
+         patch("app.services.ps_parsers.run_ps", side_effect=fake_run_ps):
+        list_r = client.get("/api/v1/scopes")
+
+    assert list_r.status_code == 200
+    item = list_r.json()[0]
+    assert "failover" in item
+    assert item["failover"] is None
+
+
+# ---------------------------------------------------------------------------
+# Critical: GET/PUT roundtrip test
+# ---------------------------------------------------------------------------
+
 def test_get_put_roundtrip(
     mock_ps_scope_raw, mock_ps_options_raw, mock_ps_exclusions_raw
 ):
