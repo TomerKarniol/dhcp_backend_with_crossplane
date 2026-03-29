@@ -2,7 +2,7 @@
 apiVersion: http.crossplane.io/v1alpha2
 kind: Request
 metadata:
-  name: dhcp-scope-{{ .Values.dhcp_values.network | replace "." "-" }}
+  name: dhcp-scope-{{ .Values.dhcp_values.scopeName | lower | replace " " "-" | replace "_" "-" }}-{{ .Values.dhcp_values.network | replace "." "-" }}
   namespace: {{ .Values.crossplane.namespace | default "crossplane-system" }}
 spec:
   deletionPolicy: Delete
