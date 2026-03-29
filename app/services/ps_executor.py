@@ -2,6 +2,8 @@ import json
 import logging
 import subprocess
 
+from app.services import dhcp_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,7 +20,18 @@ def run_ps(command: str, parse_json: bool = True) -> dict | list | None:
 
     Always appends -ErrorAction Stop so errors raise PowerShellError instead
     of silently returning empty output.
+
+    Execution-layer guard: validates DHCP environment before every call.
+    This is a mandatory safety net — even if route-level protection is bypassed,
+    DHCP operations will not proceed in unsupported environments.
+    The validation result is cached so this check is free after the first call.
+
+    Raises:
+        DhcpEnvironmentError: if the runtime cannot support DHCP automation.
+        PowerShellError: if the PowerShell command exits with a non-zero code.
     """
+    dhcp_env.validate_dhcp_environment()
+
     full_cmd = f"{command} -ErrorAction Stop"
     if parse_json:
         full_cmd += " | ConvertTo-Json -Depth 5 -Compress"

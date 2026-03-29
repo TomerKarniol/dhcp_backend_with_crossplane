@@ -6,11 +6,23 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, status
 from app.config import settings
 from app.models import DhcpScopePayload
-from app.services import scope_service
+from app.services import dhcp_env, scope_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1", tags=["scopes"])
+def _require_dhcp_env() -> None:
+    """Route-level dependency: fail fast before any business logic if the runtime
+    does not support DHCP automation.  Centralised here so every scope route
+    is protected without per-route boilerplate.  The check is cached — only the
+    first request per process incurs the subprocess overhead."""
+    dhcp_env.validate_dhcp_environment()
+
+
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["scopes"],
+    dependencies=[Depends(_require_dhcp_env)],
+)
 
 # ---------------------------------------------------------------------------
 # Shared path type + validators

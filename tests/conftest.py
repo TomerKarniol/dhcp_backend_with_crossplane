@@ -1,5 +1,26 @@
 import pytest
+from unittest.mock import patch
 from app.models import DhcpExclusion, DhcpFailover, DhcpScopePayload
+
+
+@pytest.fixture(autouse=True)
+def _bypass_dhcp_env_validation():
+    """Bypass DHCP environment validation for all tests.
+
+    Tests that specifically test validation behaviour (test_dhcp_env.py) call
+    _reset_validation_cache() themselves and set up their own mocks — this
+    autouse fixture does not interfere because an inner ``with patch(...)``
+    overrides the outer one for the duration of that context.
+
+    Without this fixture all existing tests would fail on Linux / WSL / macOS
+    because run_ps() and the scopes router dependency both call
+    validate_dhcp_environment() which would immediately raise DhcpEnvironmentError.
+    """
+    from app.services import dhcp_env
+    dhcp_env._reset_validation_cache()
+    with patch("app.services.dhcp_env.validate_dhcp_environment"):
+        yield
+    dhcp_env._reset_validation_cache()
 
 
 @pytest.fixture

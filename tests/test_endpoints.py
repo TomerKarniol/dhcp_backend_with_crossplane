@@ -169,7 +169,7 @@ def test_auth_passes_with_correct_token():
 # ---------------------------------------------------------------------------
 
 def test_healthz_endpoint():
-    with patch("app.routers.health.run_ps", return_value=None):
+    with patch("app.routers.health.validate_dhcp_environment"):
         r = client.get("/healthz")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"

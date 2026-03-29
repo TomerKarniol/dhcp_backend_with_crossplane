@@ -1,0 +1,235 @@
+"""DHCP automation environment validator.
+
+Validates that the current runtime is capable of executing DHCP operations
+through Windows PowerShell. Two concerns are enforced here so no other module
+needs ad-hoc environment awareness:
+
+  1. OS / execution context  — native Windows only; WSL/Linux/macOS rejected.
+  2. PowerShell availability — powershell.exe exists and can execute.
+  3. DHCP cmdlet availability — the DhcpServer module cmdlets are discoverable.
+
+Results are cached after the first call (thread-safe). Callers only pay the
+subprocess cost once per process lifetime.
+
+For testing, call _reset_validation_cache() to clear the cache between tests.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import platform
+import shutil
+import subprocess
+import threading
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Error taxonomy
+# ---------------------------------------------------------------------------
+
+class DhcpEnvReason:
+    """Machine-readable reason codes returned in API error responses."""
+    UNSUPPORTED_OS = "unsupported_os"
+    WSL_DETECTED = "wsl_detected"
+    POWERSHELL_NOT_FOUND = "powershell_not_found"
+    POWERSHELL_EXEC_FAILED = "powershell_exec_failed"
+    DHCP_CMDLETS_UNAVAILABLE = "dhcp_cmdlets_unavailable"
+
+
+class DhcpEnvironmentError(Exception):
+    """Runtime environment cannot support DHCP automation via PowerShell.
+
+    Attributes:
+        reason: Machine-readable code from DhcpEnvReason.
+        detail: Human-readable explanation suitable for API responses.
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(detail)
+
+
+# ---------------------------------------------------------------------------
+# Module-level validation cache  (thread-safe, set once per process)
+# ---------------------------------------------------------------------------
+
+_cache_lock = threading.Lock()
+_cache_ok: bool | None = None
+_cache_exc: DhcpEnvironmentError | None = None
+
+
+def _reset_validation_cache() -> None:
+    """Reset the cached validation result.  For testing only."""
+    global _cache_ok, _cache_exc
+    with _cache_lock:
+        _cache_ok = None
+        _cache_exc = None
+
+
+# ---------------------------------------------------------------------------
+# Individual environment checks  (internal — testable in isolation)
+# ---------------------------------------------------------------------------
+
+def _is_wsl() -> bool:
+    """Return True if this process is running inside WSL."""
+    # WSL sets these env vars in every distro
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSLENV"):
+        return True
+    # /proc/version on WSL contains "Microsoft" or "WSL"
+    try:
+        with open("/proc/version") as fh:
+            content = fh.read().lower()
+            return "microsoft" in content or "wsl" in content
+    except OSError:
+        return False
+
+
+def _check_os() -> None:
+    """Raise DhcpEnvironmentError if not running on native Windows."""
+    system = platform.system()
+
+    if system == "Linux":
+        if _is_wsl():
+            raise DhcpEnvironmentError(
+                DhcpEnvReason.WSL_DETECTED,
+                "WSL (Windows Subsystem for Linux) is not a supported runtime. "
+                "DHCP automation requires native Windows execution. "
+                "Run this backend directly on a Windows DHCP server or a domain-joined Windows host "
+                "— not inside WSL.",
+            )
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.UNSUPPORTED_OS,
+            "Unsupported operating system: Linux. "
+            "DHCP automation requires native Windows with the DhcpServer PowerShell module.",
+        )
+
+    if system == "Darwin":
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.UNSUPPORTED_OS,
+            "Unsupported operating system: macOS. "
+            "DHCP automation requires native Windows with the DhcpServer PowerShell module.",
+        )
+
+    if system != "Windows":
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.UNSUPPORTED_OS,
+            f"Unsupported operating system: {system!r}. "
+            "DHCP automation requires native Windows.",
+        )
+
+
+def _check_powershell_binary() -> None:
+    """Raise DhcpEnvironmentError if powershell.exe is missing or cannot execute.
+
+    Requires Windows PowerShell (powershell.exe), not PowerShell 7 (pwsh.exe).
+    The DhcpServer module ships with Windows PowerShell — pwsh availability
+    alone does not imply DHCP cmdlet support.
+    """
+    ps_path = shutil.which("powershell")
+    if ps_path is None:
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.POWERSHELL_NOT_FOUND,
+            "Windows PowerShell (powershell.exe) was not found on PATH. "
+            "Install Windows PowerShell 5.1 or later.",
+        )
+
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.POWERSHELL_EXEC_FAILED,
+            f"Windows PowerShell found at {ps_path!r} but failed to execute "
+            f"(rc={result.returncode}). "
+            f"stderr: {result.stderr.strip()!r}",
+        )
+
+
+def _check_dhcp_cmdlets() -> None:
+    """Raise DhcpEnvironmentError if the required DHCP cmdlets are not available.
+
+    Uses Get-Command to check whether Get-DhcpServerv4Scope is discoverable.
+    That cmdlet is representative of the entire DhcpServer module — if it is
+    present, all other cmdlets used by this project are available.
+
+    Deliberately avoids:
+      - Get-WindowsFeature  (only available on Windows Server with ServerManager)
+      - Get-Module -ListAvailable  (lists installed modules, not loaded commands)
+      - Any actual DHCP query  (would require a configured server and permissions)
+
+    This check runs fully local — no network access, no DHCP server required.
+    """
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Command Get-DhcpServerv4Scope -ErrorAction Stop | Out-Null",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.DHCP_CMDLETS_UNAVAILABLE,
+            "DHCP PowerShell cmdlets are not available on this machine. "
+            "The command 'Get-DhcpServerv4Scope' was not found. "
+            "Install the DhcpServer PowerShell module: "
+            "on Windows Server, ensure the DHCP Server role is installed; "
+            "on Windows client, install RSAT → Remote Server Administration Tools → DHCP Server Tools. "
+            "Note: PowerShell alone does not imply DHCP cmdlet availability.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Public validator
+# ---------------------------------------------------------------------------
+
+def validate_dhcp_environment() -> None:
+    """Validate that this runtime can perform DHCP automation via Windows PowerShell.
+
+    Checks (in order):
+      1. Native Windows OS — Linux, macOS, and WSL are rejected with distinct messages.
+      2. powershell.exe present and executable.
+      3. Get-DhcpServerv4Scope discoverable (DhcpServer module available).
+
+    Thread-safe. Results are cached after the first call; subsequent calls return
+    immediately from cache.  A failed environment is cached and will fail every
+    future call until the process restarts.
+
+    Raises:
+        DhcpEnvironmentError: if any check fails.
+    """
+    global _cache_ok, _cache_exc
+
+    with _cache_lock:
+        if _cache_ok is True:
+            return
+        if _cache_exc is not None:
+            raise _cache_exc
+
+        # Run all checks inside the lock — prevents duplicate subprocess calls
+        # under concurrent requests.  Subprocess timeout budget: 3 × 15s = 45s max.
+        try:
+            _check_os()
+            _check_powershell_binary()
+            _check_dhcp_cmdlets()
+        except DhcpEnvironmentError as exc:
+            logger.error(
+                "DHCP environment validation failed [%s]: %s", exc.reason, exc.detail
+            )
+            _cache_ok = False
+            _cache_exc = exc
+            raise
+
+        logger.info("DHCP environment validation passed — caching result")
+        _cache_ok = True
+        _cache_exc = None
