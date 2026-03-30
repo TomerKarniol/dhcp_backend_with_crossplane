@@ -1,13 +1,12 @@
-{{- if and .Values.dhcp_values .Values.dhcp_values.network .Values.dhcp_values.gateway -}}
 apiVersion: http.crossplane.io/v1alpha2
 kind: Request
 metadata:
-  name: dhcp-scope-{{ .Values.dhcp_values.scopeName | lower | replace " " "-" | replace "_" "-" }}-{{ .Values.dhcp_values.network | replace "." "-" }}
+  name: dhcp-scope-{{ required "dhcp_values.network is required" .Values.dhcp_values.network | replace "." "-" }}
   namespace: {{ .Values.crossplane.namespace | default "crossplane-system" }}
 spec:
   deletionPolicy: Delete
   providerConfigRef:
-    name: dhcp-http
+    name: {{ .Values.crossplane.providerConfigName | default "dhcp-http" }}
   forProvider:
     headers:
       Content-Type:
@@ -28,7 +27,7 @@ spec:
     {{- end }}
 
     payload:
-      baseUrl: "{{ .Values.apiServer.url }}/api/v1/scopes"
+      baseUrl: "{{ required "apiServer.url is required" .Values.apiServer.url }}/api/v1/scopes"
       body:
         {{- include "dhcp.payload" . | nindent 8 }}
 
@@ -46,4 +45,3 @@ spec:
 
       - method: "DELETE"
         url: (.payload.baseUrl + "/" + .payload.body.network)
-{{- end }}

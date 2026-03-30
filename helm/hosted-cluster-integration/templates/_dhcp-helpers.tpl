@@ -14,7 +14,7 @@ startRange: {{ required "dhcp_values.startRange is required" $v.startRange | quo
 endRange: {{ required "dhcp_values.endRange is required" $v.endRange | quote }}
 leaseDurationDays: {{ required "dhcp_values.leaseDurationDays is required" $v.leaseDurationDays | int }}
 description: {{ $v.description | default "" | quote }}
-gateway: {{ $v.gateway | quote }}
+gateway: {{ required "dhcp_values.gateway is required" $v.gateway | quote }}
 dnsServers: {{ required "dhcp_values.dns.servers is required" $dnsServers | toJson }}
 dnsDomain: {{ required "dhcp_values.dns.domain is required" $dnsDomain | quote }}
 exclusions: {{ $v.exclusions | default (list) | toJson }}

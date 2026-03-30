@@ -112,8 +112,7 @@ python app/main.py
 Base path: `/api/v1`
 
 - `GET /scopes` - List all scopes (canonical payload list)
-- `POST /scopes` - Create/ensure scope (idempotent)
-- `POST /scopes/{scope_id}` - Same create semantics for Crossplane mapping
+- `POST /scopes/{scope_id}` - Create/ensure scope (idempotent); used by Crossplane for all lifecycle operations
 - `GET /scopes/{scope_id}` - Get canonical current state
 - `PUT /scopes/{scope_id}` - Diff-based update
 - `DELETE /scopes/{scope_id}` - Delete scope (idempotent)
@@ -190,6 +189,15 @@ To keep reconciliation stable:
 - No hidden API defaults
 - Deterministic ordering (especially exclusions and field order)
 - Path/body scope identity must match on mutating scope endpoints
+
+**Exclusion ordering:** The API always returns exclusions sorted by IP (ascending). Your `values.yaml`
+exclusions **must** be listed in ascending IP numerical order. If they are not, Crossplane will
+detect a mismatch on every GET and issue a PUT indefinitely.
+
+**Removing failover with layered values files:** When using multiple `-f` values files (e.g.
+site defaults + cluster override), use `failover: null` to remove an inherited failover config.
+Using `failover: {}` does **not** remove it — Helm deep-merges the empty map with the base map,
+leaving the original failover object intact. Only `null` replaces the key.
 
 ## Security and Safety
 

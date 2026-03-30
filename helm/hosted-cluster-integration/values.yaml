@@ -1,5 +1,8 @@
 crossplane:
   namespace: crossplane-system
+  # Name of the Crossplane ProviderConfig that holds the DHCP API connection details.
+  # Override this if you have multiple provider configs (e.g. per-site or per-environment).
+  providerConfigName: dhcp-http
 
 apiServer:
   url: https://dhcp-api.lab.local
@@ -7,31 +10,6 @@ apiServer:
     name: dhcp-api-token
     namespace: crossplane-system
     key: token
-
-cluster:
-  name: tomer-hc
-  namespace: clusters
-  baseDomain: lab.local
-
-  release:
-    image: quay.io/openshift-release-dev/ocp-release:4.18.0-x86_64
-
-  pullSecret:
-    name: pull-secret
-
-  sshKey:
-    name: ssh-key
-
-  networking:
-    machineNetwork:
-      - cidr: 10.20.30.0/24
-    clusterNetwork:
-      - cidr: 10.132.0.0/14
-    serviceNetwork:
-      - cidr: 172.31.0.0/16
-
-  platform:
-    type: None
 
 dhcp_values:
   scopeName: "tomer-hc-workers"
