@@ -6,28 +6,23 @@ A production-oriented FastAPI service for managing Windows DHCP IPv4 scopes thro
 
 This repository connects declarative cluster configuration to real DHCP server state:
 
-1. Git stores desired DHCP configuration.
-2. Helm renders a Crossplane `Request` resource.
-3. Crossplane reconciles by calling this API (`GET`/`POST`/`PUT`/`DELETE`).
+1. A values file in Git defines the desired DHCP scope configuration.
+2. Helm renders a Crossplane `Request` resource from those values.
+3. Crossplane reconciles by calling this API (`GET` / `POST` / `PUT` / `DELETE`).
 4. The API executes Windows DHCP PowerShell cmdlets.
-5. Current DHCP state is normalized back into a canonical API shape.
+5. Current DHCP state is normalized back into a canonical shape so GET equals the desired PUT body.
 
-The implementation focuses on:
-
-- Idempotent create/delete behavior
-- Deterministic serialization for stable reconciliation
-- Strict schema and subnet validation
-- Safe PowerShell execution and environment gating
+The user only ever edits values files. The backend is not a manual entry point.
 
 ## Architecture
 
 ```text
-Git desired state
-  -> Helm templates
-    -> Crossplane provider-http Request
-      -> FastAPI DHCP backend
-        -> PowerShell cmdlets
-          -> Windows DHCP server
+Git (values files — desired state)
+  → Helm (renders Crossplane Request CR)
+    → Crossplane provider-http (reconciliation engine)
+      → FastAPI DHCP backend (validate + normalize + execute)
+        → PowerShell cmdlets
+          → Windows DHCP Server
 ```
 
 ## Repository Layout
@@ -35,65 +30,77 @@ Git desired state
 ```text
 app/
   main.py                    FastAPI app bootstrap
-  config.py                  Env-based settings
-  logging_config.py          JSON logging config
+  config.py                  Env-based settings (DHCP_API_TOKEN, HOST, PORT, LOG_LEVEL)
+  logging_config.py          JSON structured logging
   exception_handlers.py      Global API exception mapping
-  models.py                  Pydantic request/response models
+  models.py                  Pydantic request/response models (DhcpScopePayload, DhcpFailover, DhcpExclusion)
   routers/
-    scopes.py                DHCP scope CRUD endpoints
-    health.py                Runtime health endpoint
+    scopes.py                DHCP scope endpoints (POST/GET/PUT/DELETE /api/v1/scopes/{scope_id})
+    health.py                /healthz runtime capability check
   services/
-    dhcp_env.py              Runtime capability validator (OS/PS/cmdlets)
-    ps_executor.py           PowerShell command runner
-    ps_parsers.py            Parse/normalize PowerShell output
-    scope_service.py         Core scope lifecycle logic
+    dhcp_env.py              Runtime guard (OS / PowerShell / DHCP cmdlets check)
+    ps_executor.py           PowerShell command runner with error handling
+    ps_parsers.py            Parse and normalize PowerShell JSON output
+    scope_service.py         Core scope lifecycle logic (create / get / update / delete)
   utils/
-    ip_utils.py              IP + TimeSpan parsing helpers
+    ip_utils.py              IP integer conversion and TimeSpan parsing helpers
 
 helm/hosted-cluster-integration/
   Chart.yaml
-  values.yaml
+  values.yaml                Reference values file with all supported fields documented
   templates/
-    dhcp-scope-request.yaml  Crossplane provider-http Request template
-    _dhcp-helpers.tpl        Canonical payload rendering helpers
+    dhcp-scope-request.yaml  Crossplane Request CR — all verbs (POST/GET/PUT/DELETE) on /{network}
+    _dhcp-helpers.tpl        Canonical payload rendering with required-field enforcement
+
+scripts/
+  validate_dhcp_values.py    Self-contained Pydantic validator — call with one or more values files
+  validate_changed_clusters.py  CI entry point — discovers changed cluster files via git diff,
+                                resolves full merge chain, calls validate_dhcp_values.py for each
+  requirements.txt           Minimal CI dependencies (pydantic, PyYAML)
 
 tests/
-  test_endpoints.py
-  test_models.py
-  test_validation.py
-  test_parsers.py
-  test_diff.py
-  test_dhcp_env.py
-  test_parity.py
+  conftest.py
+  test_endpoints.py          HTTP endpoint contracts and status codes
+  test_models.py             Pydantic field ordering and serialization
+  test_validation.py         IP validation, subnet consistency, failover mode enforcement
+  test_parsers.py            PowerShell output parsing and normalization
+  test_diff.py               Diff-based update logic
+  test_dhcp_env.py           Runtime environment guard behavior
+  test_parity.py             GET/PUT parity — the main guard against Crossplane reconciliation loops
+  test_edge_cases.py         Edge cases and boundary conditions
 ```
 
 ## Runtime Requirements
 
+The API itself requires:
+
 - Python 3.12+
-- Windows host (native Windows, not Linux/macOS/WSL)
-- `powershell.exe` available on PATH
+- Windows host (native Windows, **not** Linux / macOS / WSL)
+- `powershell.exe` on PATH
 - DHCP PowerShell cmdlets (`Get-DhcpServerv4Scope`, etc.)
-  - Windows Server: DHCP Server role/tools
+  - Windows Server: DHCP Server role or RSAT DHCP tools
   - Windows client: RSAT DHCP tools
+
+The CI validation scripts require only Python 3.12+ and can run on any OS.
 
 ## Installation
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ## Configuration
 
-Environment variables:
+| Variable | Default | Description |
+|---|---|---|
+| `DHCP_API_TOKEN` | *(empty)* | Bearer token for auth. When unset, auth is disabled entirely. |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8080` | Bind port |
+| `LOG_LEVEL` | `INFO` | Log level |
 
-- `DHCP_API_TOKEN` (default: empty, auth disabled)
-- `HOST` (default: `0.0.0.0`)
-- `PORT` (default: `8080`)
-- `LOG_LEVEL` (default: `INFO`)
-
-You can also use a `.env` file in the repo root.
+A `.env` file in the repo root is also supported.
 
 ## Run the API
 
@@ -101,22 +108,20 @@ You can also use a `.env` file in the repo root.
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-or:
-
-```bash
-python app/main.py
-```
-
 ## API Endpoints
 
 Base path: `/api/v1`
 
-- `GET /scopes` - List all scopes (canonical payload list)
-- `POST /scopes/{scope_id}` - Create/ensure scope (idempotent); used by Crossplane for all lifecycle operations
-- `GET /scopes/{scope_id}` - Get canonical current state
-- `PUT /scopes/{scope_id}` - Diff-based update
-- `DELETE /scopes/{scope_id}` - Delete scope (idempotent)
-- `GET /healthz` - Runtime capability check
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/scopes` | List all scopes (canonical payload list, sorted by network) |
+| `POST` | `/scopes/{scope_id}` | Create or ensure scope — used by Crossplane for all lifecycle operations |
+| `GET` | `/scopes/{scope_id}` | Get current canonical state (404 if not found → Crossplane issues POST) |
+| `PUT` | `/scopes/{scope_id}` | Diff-based update — applies only changed fields |
+| `DELETE` | `/scopes/{scope_id}` | Delete scope (idempotent — 204 even if not found) |
+| `GET` | `/healthz` | Runtime capability check (safe to call on non-Windows) |
+
+`scope_id` is always the IPv4 network address of the scope (e.g. `10.20.30.0`).
 
 ## Canonical Payload Shape
 
@@ -128,89 +133,120 @@ Base path: `/api/v1`
   "startRange": "10.20.30.50",
   "endRange": "10.20.30.200",
   "leaseDurationDays": 8,
-  "description": "optional text",
+  "description": "",
   "gateway": "10.20.30.1",
   "dnsServers": ["10.10.1.5", "10.10.1.6"],
   "dnsDomain": "lab.local",
-  "exclusions": [{ "startAddress": "10.20.30.1", "endAddress": "10.20.30.10" }],
+  "exclusions": [
+    { "startAddress": "10.20.30.1", "endAddress": "10.20.30.10" }
+  ],
   "failover": null
 }
 ```
 
-Notes:
-
-- Field order is intentional and tested for parity.
-- `failover` is either `null` or a full object.
-- Exclusions are returned sorted by IP.
-- DNS server order is preserved (primary/secondary semantics).
+- Field order is intentional and tested — Crossplane byte-compares GET response to PUT body.
+- `failover` is either `null` or a full failover object (no partial objects).
+- Exclusions are always returned sorted by IP (ascending). Values files must match this order.
+- DNS server order is preserved exactly (primary/secondary semantics — never sorted).
+- `description` defaults to `""` (never `null`).
 
 ## Failover Model
 
-Supported modes:
+Supported modes: `HotStandby`, `LoadBalance`
 
-- `HotStandby`
-- `LoadBalance`
+| Mode | Required fields | Normalized fields |
+|---|---|---|
+| `HotStandby` | `serverRole` | `loadBalancePercent` → `0` |
+| `LoadBalance` | `loadBalancePercent` | `serverRole` → `"Active"`, `reservePercent` → `0` |
 
-Normalization rules in model validation:
+Normalization at both the Helm template layer and the Pydantic model layer prevents GET/PUT drift
+when values include cross-mode fields.
 
-- `HotStandby`: `serverRole` required, `loadBalancePercent` normalized to `0`
-- `LoadBalance`: `loadBalancePercent` required, `serverRole` normalized to `Active`, `reservePercent` normalized to `0`
+## Helm Chart
 
-This prevents GET/PUT drift when Helm includes unused mode fields.
+The chart under `helm/hosted-cluster-integration` renders a single Crossplane `Request` CR.
 
-## Crossplane + Helm Integration
+Key behaviors:
 
-The chart under `helm/hosted-cluster-integration` renders a Crossplane `Request` resource that maps:
-
-- `POST` -> `.../api/v1/scopes/{network}`
-- `GET` -> `.../api/v1/scopes/{network}`
-- `PUT` -> `.../api/v1/scopes/{network}`
-- `DELETE` -> `.../api/v1/scopes/{network}`
-
-Template behavior highlights:
-
-- Authorization header can be injected from a Kubernetes secret.
-- Failover mode-specific fields are normalized at template render.
-- Payload is emitted in canonical API field order.
-
-Render example:
+- **Crossplane object name** is based only on `dhcp_values.network` (`dhcp-scope-10-20-30-0`).
+  Changing `scopeName` does **not** create a new Crossplane CR or delete the live scope.
+- **Required fields** — `helm template` fails with a clear error if any of these are missing:
+  `dhcp_values.network`, `dhcp_values.scopeName`, `dhcp_values.subnetMask`, `dhcp_values.startRange`,
+  `dhcp_values.endRange`, `dhcp_values.leaseDurationDays`, `dhcp_values.gateway`,
+  `dhcp_values.dns.servers`, `dhcp_values.dns.domain`, `apiServer.url`
+- **`providerConfigRef.name`** is configurable via `crossplane.providerConfigName`
+  (defaults to `dhcp-http`).
 
 ```bash
-helm template dhcp-request ./helm/hosted-cluster-integration -f ./helm/hosted-cluster-integration/values.yaml
+helm template dhcp-request ./helm/hosted-cluster-integration \
+  -f ./helm/hosted-cluster-integration/values.yaml
 ```
 
-## Reconciliation Contract (Important)
+## Reconciliation Contract
 
-Crossplane repeatedly compares desired payload with `GET` response. Any mismatch can trigger repeated `PUT`s.
+Crossplane reconciles every ~60 seconds: GET current state → compare to desired PUT body → issue PUT on any diff.
 
-To keep reconciliation stable:
+Rules that must hold to prevent infinite reconciliation loops:
 
-- Canonical GET shape must match desired PUT body
-- No hidden API defaults
-- Deterministic ordering (especially exclusions and field order)
-- Path/body scope identity must match on mutating scope endpoints
+- GET response must be byte-identical to the desired PUT body when no change is intended.
+- No hidden defaults or transformations inside the API.
+- Exclusions in values files **must** be in ascending IP numerical order — the API always returns them sorted.
+- DNS server order must match exactly — the API preserves insertion order, never sorts.
 
-**Exclusion ordering:** The API always returns exclusions sorted by IP (ascending). Your `values.yaml`
-exclusions **must** be listed in ascending IP numerical order. If they are not, Crossplane will
-detect a mismatch on every GET and issue a PUT indefinitely.
+**Removing failover with layered values files:** use `failover: null` — not `failover: {}`.
+Helm deep-merges `{}` with the parent map, leaving failover intact. Only `null` removes it.
 
-**Removing failover with layered values files:** When using multiple `-f` values files (e.g.
-site defaults + cluster override), use `failover: null` to remove an inherited failover config.
-Using `failover: {}` does **not** remove it — Helm deep-merges the empty map with the base map,
-leaving the original failover object intact. Only `null` replaces the key.
+## CI Validation
+
+Two scripts validate `dhcp_values` before anything reaches Crossplane:
+
+```bash
+# Validate one cluster directly
+python scripts/validate_dhcp_values.py sites/site-a/mce/mce-1/hosted-cluster/cluster-1.yaml
+
+# Auto-detect changed cluster files from git and validate each with its full merge chain
+python scripts/validate_changed_clusters.py
+
+# Validate all clusters regardless of what changed
+python scripts/validate_changed_clusters.py --all
+```
+
+Install CI dependencies (pydantic + PyYAML only — no FastAPI stack needed):
+
+```bash
+pip install -r scripts/requirements.txt
+```
+
+GitLab CI job:
+
+```yaml
+validate-dhcp-values:
+  stage: validate
+  image: python:3.12-slim
+  before_script:
+    - pip install --quiet -r scripts/requirements.txt
+  script:
+    - python scripts/validate_changed_clusters.py
+  rules:
+    - changes:
+        - sites/**/*.yaml
+```
+
+`validate_changed_clusters.py` is smart about scope:
+- `sites/{site}/config.yaml` changed → validates all clusters in that site
+- `sites/{site}/mce/{mce}/config.yaml` changed → validates all clusters in that MCE
+- `sites/{site}/mce/{mce}/hosted-cluster/{cluster}.yaml` changed → validates just that cluster
 
 ## Security and Safety
 
-- Optional bearer token auth (`DHCP_API_TOKEN`)
-- Runtime environment validation before DHCP operations
-- `-ErrorAction Stop` on PowerShell commands
-- Sensitive command arguments (shared secrets) redacted in logs
-- PowerShell stderr sanitized before returning to clients
-- Structured JSON logs
+- Bearer token auth via `DHCP_API_TOKEN` — optional; disabled when unset
+- Runtime environment guard rejects all scope operations on non-Windows / non-DHCP hosts
+- `-ErrorAction Stop` on every PowerShell command
+- Shared secrets are never logged
+- PowerShell stderr is sanitized before returning to clients
+- Structured JSON logs include `scope_id`, `operation`, `result`, `duration`
 
 ## Testing
-
-Run:
 
 ```bash
 pytest
@@ -218,19 +254,20 @@ pytest
 
 Test coverage includes:
 
-- Endpoint behavior and status contracts
-- Pydantic schema and subnet/failover validation
-- PowerShell parsing and deterministic normalization
-- Diff-based update semantics
-- Runtime environment guards
-- GET/PUT parity contract and drift-prevention scenarios
+- Endpoint contracts and HTTP status codes
+- Pydantic schema validation (IPs, subnet consistency, range ordering, failover mode enforcement)
+- PowerShell output parsing and normalization
+- Diff-based update semantics (only changed sections trigger cmdlets)
+- Runtime environment guard behavior
+- GET/PUT parity contract — the main guard against Crossplane reconciliation loops
 
 ## Operational Notes
 
-- This service is intended to run on a Windows environment with DHCP cmdlets.
-- Linux/macOS/WSL requests to scope endpoints are rejected with structured `503` reasons.
-- `healthz` remains callable even when DHCP runtime prerequisites are missing.
-- Deletion is fail-safe around failover detach to avoid orphaned relationship drift.
+- This service must run on a Windows host with DHCP cmdlets available.
+- Linux / macOS / WSL requests to scope endpoints return a structured `503` with a `reason` field.
+- `/healthz` is always safe to call regardless of OS.
+- Scope deletion is fail-safe: failover is detached before scope removal to prevent orphaned relationships.
+- If failover detach fails, the delete is retried on the next Crossplane reconciliation cycle.
 
 ## License
 
