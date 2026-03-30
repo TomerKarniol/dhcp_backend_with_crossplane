@@ -1,7 +1,7 @@
 from __future__ import annotations
 from ipaddress import IPv4Address
 from typing import Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class DhcpExclusion(BaseModel):
@@ -110,6 +110,13 @@ class DhcpScopePayload(BaseModel):
         description="Human-readable display name for the scope",
         examples=["Cluster-A Management"],
     )
+
+    @field_validator("scopeName")
+    @classmethod
+    def scope_name_not_whitespace_only(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("scopeName must not be blank or whitespace-only")
+        return v
     network: IPv4Address = Field(
         description="Network address — also the DHCP scope ID used in all PowerShell cmdlets",
         examples=["10.20.30.0"],
@@ -160,6 +167,18 @@ class DhcpScopePayload(BaseModel):
         default=None,
         description="Failover configuration. null = no failover configured.",
     )
+
+    @model_validator(mode="after")
+    def no_duplicate_exclusions(self) -> "DhcpScopePayload":
+        seen: set[tuple] = set()
+        for i, excl in enumerate(self.exclusions):
+            key = (excl.startAddress, excl.endAddress)
+            if key in seen:
+                raise ValueError(
+                    f"exclusions[{i}] {excl.startAddress}-{excl.endAddress} is a duplicate"
+                )
+            seen.add(key)
+        return self
 
     @model_validator(mode="after")
     def end_range_gte_start_range(self) -> "DhcpScopePayload":

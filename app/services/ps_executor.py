@@ -66,4 +66,11 @@ def run_ps(command: str, parse_json: bool = True) -> dict | list | None:
     if not parse_json or not result.stdout.strip():
         return None
 
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise PowerShellError(
+            command,
+            f"PowerShell returned non-JSON output: {exc}. stdout={result.stdout.strip()[:200]!r}",
+            0,
+        ) from exc

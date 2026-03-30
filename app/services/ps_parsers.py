@@ -97,7 +97,7 @@ def assemble_scope_state(scope_id: str) -> DhcpScopePayload:
             )
             for e in exclusions_list
         ],
-        key=lambda x: ip_to_int(x.startAddress),
+        key=lambda x: (ip_to_int(x.startAddress), ip_to_int(x.endAddress)),
     )
 
     return DhcpScopePayload(

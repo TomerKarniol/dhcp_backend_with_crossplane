@@ -137,13 +137,17 @@ def update_scope(scope_id: str, desired: DhcpScopePayload) -> DhcpScopePayload:
         current.scopeName != desired.scopeName
         or current.leaseDurationDays != desired.leaseDurationDays
         or current.description != desired.description
+        or current.startRange != desired.startRange
+        or current.endRange != desired.endRange
     ):
-        logger.info("Scope %s: updating params (name/lease/description)", scope_id)
+        logger.info("Scope %s: updating params (name/lease/description/range)", scope_id)
         run_ps(
             f"Set-DhcpServerv4Scope -ScopeId {scope_id} "
             f'-Name "{_ps_str(desired.scopeName)}" '
             f"-LeaseDuration (New-TimeSpan -Days {desired.leaseDurationDays}) "
-            f'-Description "{_ps_str(desired.description)}"',
+            f'-Description "{_ps_str(desired.description)}" '
+            f"-StartRange {desired.startRange} "
+            f"-EndRange {desired.endRange}",
             parse_json=False,
         )
 
@@ -259,12 +263,14 @@ def _remove_scope_from_failover(scope_id: str, rel_name: str) -> None:
         parse_json=False,
     )
     try:
-        rel = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
-        if rel and not rel.get("ScopeId"):
-            run_ps(
-                f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
-                parse_json=False,
-            )
+        rel_raw = run_ps(f'Get-DhcpServerv4Failover -Name "{_ps_str(rel_name)}"')
+        if rel_raw:
+            rel = rel_raw if isinstance(rel_raw, dict) else rel_raw[0]
+            if not rel.get("ScopeId"):
+                run_ps(
+                    f'Remove-DhcpServerv4Failover -Name "{_ps_str(rel_name)}" -Force',
+                    parse_json=False,
+                )
     except PowerShellError:
         pass  # relationship already gone — idempotent
 

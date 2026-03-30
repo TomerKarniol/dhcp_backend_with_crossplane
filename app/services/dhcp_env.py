@@ -143,12 +143,19 @@ def _check_powershell_binary() -> None:
             "Install Windows PowerShell 5.1 or later.",
         )
 
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.POWERSHELL_EXEC_FAILED,
+            f"Windows PowerShell found at {ps_path!r} but timed out during startup check. "
+            "PowerShell may be hung or system resources exhausted.",
+        )
     if result.returncode != 0:
         raise DhcpEnvironmentError(
             DhcpEnvReason.POWERSHELL_EXEC_FAILED,
@@ -172,18 +179,25 @@ def _check_dhcp_cmdlets() -> None:
 
     This check runs fully local — no network access, no DHCP server required.
     """
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-Command Get-DhcpServerv4Scope -ErrorAction Stop | Out-Null",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-Command Get-DhcpServerv4Scope -ErrorAction Stop | Out-Null",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise DhcpEnvironmentError(
+            DhcpEnvReason.POWERSHELL_EXEC_FAILED,
+            "Timed out while checking for DHCP PowerShell cmdlets. "
+            "PowerShell may be hung or system resources exhausted.",
+        )
     if result.returncode != 0:
         raise DhcpEnvironmentError(
             DhcpEnvReason.DHCP_CMDLETS_UNAVAILABLE,
