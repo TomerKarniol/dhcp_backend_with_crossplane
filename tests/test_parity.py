@@ -449,6 +449,36 @@ class TestFullPayloadParity:
             f"GET resp: {json.dumps(got, indent=2)}"
         )
 
+    def test_full_scope_with_loadbalance_failover(self):
+        """Complete scope with LoadBalance failover — full GET/PUT parity.
+
+        serverRole must be 'Active' (normalised), reservePercent must be 0 (normalised).
+        loadBalancePercent comes from PS output.  These invariants prevent a Crossplane
+        reconciliation loop when the Helm template renders the canonical LoadBalance shape.
+        """
+        desired = _scope_json(failover={
+            "partnerServer": "dhcp02.lab.local",
+            "relationshipName": "tomer-hc-failover",
+            "mode": "LoadBalance",
+            "serverRole": "Active",      # normalised for LoadBalance
+            "reservePercent": 0,          # normalised for LoadBalance
+            "loadBalancePercent": 50,
+            "maxClientLeadTimeMinutes": 60,
+            "sharedSecret": None,
+        })
+        ps_fo = _ps_failover(
+            Mode="LoadBalance",
+            ServerRole="Active",
+            ReservePercent=0,
+            LoadBalancePercent=50,
+        )
+        got = _assemble(_ps_scope(), _ps_options(), _ps_exclusions(), failover_raw=ps_fo)
+        assert got == desired, (
+            f"GET/PUT mismatch with LoadBalance failover!\n"
+            f"PUT body: {json.dumps(desired, indent=2)}\n"
+            f"GET resp: {json.dumps(got, indent=2)}"
+        )
+
     def test_scope_with_empty_description_no_loop(self):
         """Scope where description was never set — PS returns null — must not cause loop."""
         desired = _scope_json(description="", failover=None)

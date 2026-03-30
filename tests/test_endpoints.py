@@ -78,6 +78,105 @@ def test_post_idempotent_existing():
 
 
 # ---------------------------------------------------------------------------
+# POST /scopes/{scope_id}  — Crossplane provider-http target
+# ---------------------------------------------------------------------------
+
+def test_post_by_scope_id_creates_scope():
+    """POST /scopes/{scope_id} is the actual URL Crossplane uses for create.
+    It must behave identically to POST /scopes when path matches body.network."""
+    created = _make_scope()
+    with patch("app.services.scope_service.create_scope", return_value=created):
+        r = client.post("/api/v1/scopes/10.20.30.0", json=_make_scope_dict())
+    assert r.status_code == 200
+    assert r.json()["network"] == "10.20.30.0"
+
+
+def test_post_by_scope_id_mismatch_returns_400():
+    """POST /scopes/{scope_id} must reject a body whose network != path scope_id.
+
+    Without this check, Crossplane could POST to /scopes/10.20.30.0 with a body
+    describing 10.20.40.0 and create the wrong scope silently.
+
+    The body must be fully self-consistent for 10.20.40.0 so Pydantic subnet
+    validation passes — then our path/body check fires and returns 400.
+    """
+    body = {
+        "scopeName": "Different Scope",
+        "network": "10.20.40.0",
+        "subnetMask": "255.255.255.0",
+        "startRange": "10.20.40.100",
+        "endRange": "10.20.40.200",
+        "leaseDurationDays": 8,
+        "description": "",
+        "gateway": "10.20.40.1",
+        "dnsServers": ["10.0.0.53"],
+        "dnsDomain": "lab.local",
+        "exclusions": [],
+        "failover": None,
+    }
+    r = client.post("/api/v1/scopes/10.20.30.0", json=body)
+    assert r.status_code == 400
+    assert "does not match" in r.json()["detail"]
+
+
+def test_post_by_scope_id_invalid_scope_id_returns_400():
+    """POST /scopes/{scope_id} with malformed scope_id must return 400."""
+    r = client.post("/api/v1/scopes/10.20.999.0", json=_make_scope_dict())
+    assert r.status_code == 400
+    assert "Invalid scope ID" in r.json()["detail"]
+
+
+def test_post_by_scope_id_with_hotstandby_failover():
+    """POST /scopes/{scope_id} with HotStandby failover delegates to same service function."""
+    failover_dict = {
+        "partnerServer": "dhcp02.lab.local",
+        "relationshipName": "rel1",
+        "mode": "HotStandby",
+        "serverRole": "Active",
+        "reservePercent": 5,
+        "loadBalancePercent": 0,
+        "maxClientLeadTimeMinutes": 60,
+        "sharedSecret": None,
+    }
+    body = _make_scope_dict(failover=failover_dict)
+    created = _make_scope(failover=DhcpScopePayload(**body).failover)
+    with patch("app.services.scope_service.create_scope", return_value=created) as mock_create:
+        r = client.post("/api/v1/scopes/10.20.30.0", json=body)
+    assert r.status_code == 200
+    mock_create.assert_called_once()
+    called_payload = mock_create.call_args[0][0]
+    assert called_payload.failover is not None
+    assert called_payload.failover.mode == "HotStandby"
+    assert called_payload.failover.serverRole == "Active"
+
+
+def test_post_by_scope_id_with_loadbalance_failover():
+    """POST /scopes/{scope_id} with LoadBalance failover — serverRole must be normalised to Active."""
+    failover_dict = {
+        "partnerServer": "dhcp02.lab.local",
+        "relationshipName": "rel1",
+        "mode": "LoadBalance",
+        "loadBalancePercent": 50,
+        "maxClientLeadTimeMinutes": 60,
+        "sharedSecret": None,
+    }
+    body = _make_scope_dict(failover=failover_dict)
+    from app.models import DhcpFailover
+    f = DhcpFailover(**failover_dict)
+    created = _make_scope(failover=f)
+    with patch("app.services.scope_service.create_scope", return_value=created) as mock_create:
+        r = client.post("/api/v1/scopes/10.20.30.0", json=body)
+    assert r.status_code == 200
+    mock_create.assert_called_once()
+    called_payload = mock_create.call_args[0][0]
+    assert called_payload.failover is not None
+    assert called_payload.failover.mode == "LoadBalance"
+    assert called_payload.failover.serverRole == "Active"   # normalised
+    assert called_payload.failover.reservePercent == 0      # normalised
+    assert called_payload.failover.loadBalancePercent == 50
+
+
+# ---------------------------------------------------------------------------
 # PUT
 # ---------------------------------------------------------------------------
 

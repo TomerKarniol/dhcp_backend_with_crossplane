@@ -298,11 +298,13 @@ def _create_failover_relationship(scope_id: str, failover: DhcpFailover) -> None
         f'-PartnerServer "{_ps_str(failover.partnerServer)}" '
         f'-ScopeId {scope_id} '
         f'-Mode {failover.mode} '
-        f'-ServerRole {failover.serverRole} '
         f'-MaxClientLeadTime (New-TimeSpan -Minutes {failover.maxClientLeadTimeMinutes}) '
         f'-Force'
     )
     if failover.mode == "HotStandby":
+        # -ServerRole and -ReservePercent are only valid for HotStandby.
+        # The Windows cmdlet does not accept -ServerRole for LoadBalance mode.
+        cmd += f" -ServerRole {failover.serverRole}"
         cmd += f" -ReservePercent {failover.reservePercent}"
     else:
         cmd += f" -LoadBalancePercent {failover.loadBalancePercent}"
@@ -334,11 +336,17 @@ def _handle_failover_diff(
         return
 
     # Both exist — check identity fields first.
-    # relationshipName, partnerServer, and serverRole are identity-level: they cannot be
-    # changed in-place on a live relationship. Changing them requires remove + recreate.
+    # These fields cannot be changed in-place on a live relationship; remove + recreate is
+    # the only safe operation.
+    #
+    # mode is identity-level: Set-DhcpServerv4Failover cannot change mode safely because
+    # -ServerRole is not a settable parameter.  Switching LoadBalance→HotStandby via Set
+    # leaves role semantics undefined; switching HotStandby→LoadBalance via Set passes
+    # -ServerRole to a mode that does not accept it.  Always remove + recreate on mode change.
     identity_changed = (
         current.relationshipName != desired.relationshipName
         or current.partnerServer != desired.partnerServer
+        or current.mode != desired.mode
         or current.serverRole != desired.serverRole
     )
     if identity_changed:

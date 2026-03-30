@@ -315,3 +315,169 @@ def test_scope_exists_returns_false_on_not_found():
         side_effect=PowerShellError("Get-DhcpServerv4Scope", "No DHCP scope found", 1),
     ):
         assert scope_exists("10.20.30.0") is False
+
+
+# ---------------------------------------------------------------------------
+# Failover mode-specific PS command correctness
+# ---------------------------------------------------------------------------
+
+def test_create_failover_loadbalance_excludes_server_role():
+    """Add-DhcpServerv4Failover for LoadBalance must NOT include -ServerRole.
+
+    The Windows DHCP cmdlet does not accept -ServerRole for LoadBalance mode.
+    Passing it would either cause a cmdlet error or silently corrupt the relationship.
+    """
+    from app.services import scope_service
+
+    desired = _make_scope(failover=_make_failover(
+        mode="LoadBalance",
+        serverRole=None,       # not set by caller — model normalises to Active
+        loadBalancePercent=50,
+        reservePercent=0,
+    ))
+
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [_make_scope(failover=None), desired]
+        mock_ps.side_effect = [
+            PowerShellError("Get-DhcpServerv4Failover", "Not found", 1),  # relationship check
+            None,  # Add-DhcpServerv4Failover
+            None,  # Invoke-DhcpServerv4FailoverReplication
+        ]
+        scope_service.update_scope("10.20.30.0", desired)
+
+    add_cmd = next(
+        c.args[0] for c in mock_ps.call_args_list
+        if c.args and "Add-DhcpServerv4Failover" in c.args[0]
+    )
+    assert "-ServerRole" not in add_cmd, (
+        "Add-DhcpServerv4Failover for LoadBalance must not include -ServerRole"
+    )
+    assert "-LoadBalancePercent 50" in add_cmd
+
+
+def test_create_failover_hotstandby_includes_server_role():
+    """Add-DhcpServerv4Failover for HotStandby must include -ServerRole and -ReservePercent."""
+    from app.services import scope_service
+
+    desired = _make_scope(failover=_make_failover(
+        mode="HotStandby", serverRole="Active", reservePercent=5,
+    ))
+
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [_make_scope(failover=None), desired]
+        mock_ps.side_effect = [
+            PowerShellError("Get-DhcpServerv4Failover", "Not found", 1),
+            None,  # Add-DhcpServerv4Failover
+            None,  # Invoke-DhcpServerv4FailoverReplication
+        ]
+        scope_service.update_scope("10.20.30.0", desired)
+
+    add_cmd = next(
+        c.args[0] for c in mock_ps.call_args_list
+        if c.args and "Add-DhcpServerv4Failover" in c.args[0]
+    )
+    assert "-ServerRole Active" in add_cmd
+    assert "-ReservePercent 5" in add_cmd
+    assert "-LoadBalancePercent" not in add_cmd
+
+
+# ---------------------------------------------------------------------------
+# Mode switch: always remove + recreate (never Set)
+# ---------------------------------------------------------------------------
+
+def test_failover_mode_switch_hotstandby_to_loadbalance_triggers_recreate():
+    """Switching from HotStandby to LoadBalance must remove + recreate, not Set.
+
+    Set-DhcpServerv4Failover cannot safely handle mode transitions: it does not
+    accept -ServerRole, leaving role semantics undefined after the switch.
+    """
+    current = _make_scope(failover=_make_failover(
+        mode="HotStandby", serverRole="Active", reservePercent=5,
+    ))
+    desired = _make_scope(failover=_make_failover(
+        mode="LoadBalance",
+        serverRole=None,       # model normalises to Active
+        loadBalancePercent=50,
+        reservePercent=0,
+    ))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope("10.20.30.0", desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands), (
+        "Mode switch must remove scope from old relationship first"
+    )
+    assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands), (
+        "Mode switch must not use Set-DhcpServerv4Failover"
+    )
+
+
+def test_failover_mode_switch_loadbalance_to_hotstandby_triggers_recreate():
+    """Switching from LoadBalance to HotStandby must remove + recreate, not Set.
+
+    When both current and desired serverRole are 'Active' (LoadBalance normalises
+    to Active, HotStandby-Active is explicitly Active), the old identity check
+    would not detect a change.  The mode field must be compared explicitly.
+    """
+    current = _make_scope(failover=_make_failover(
+        mode="LoadBalance",
+        serverRole=None,       # model normalises to Active
+        loadBalancePercent=50,
+        reservePercent=0,
+    ))
+    desired = _make_scope(failover=_make_failover(
+        mode="HotStandby", serverRole="Active", reservePercent=10,
+    ))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope("10.20.30.0", desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands), (
+        "Mode switch must remove scope from old relationship first"
+    )
+    assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands), (
+        "Mode switch must not use Set-DhcpServerv4Failover"
+    )
+
+
+def test_failover_mode_switch_loadbalance_to_hotstandby_standby_role_triggers_recreate():
+    """LoadBalance→HotStandby(Standby): serverRole also changes — must remove + recreate."""
+    current = _make_scope(failover=_make_failover(
+        mode="LoadBalance", serverRole=None, loadBalancePercent=50, reservePercent=0,
+    ))
+    desired = _make_scope(failover=_make_failover(
+        mode="HotStandby", serverRole="Standby", reservePercent=5,
+    ))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope("10.20.30.0", desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands)
+    assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
