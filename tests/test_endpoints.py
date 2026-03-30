@@ -64,16 +64,22 @@ def test_get_missing_scope():
 def test_post_create_new_scope():
     created = _make_scope()
     with patch("app.services.scope_service.create_scope", return_value=created):
-        r = client.post("/api/v1/scopes", json=_make_scope_dict())
+        r = client.post("/api/v1/scopes/10.20.30.0", json=_make_scope_dict())
     assert r.status_code == 200
     assert r.json()["network"] == "10.20.30.0"
+
+
+def test_post_bare_scopes_route_not_found():
+    """POST /scopes (without scope_id) must not exist — all writes go through Git/Crossplane."""
+    r = client.post("/api/v1/scopes", json=_make_scope_dict())
+    assert r.status_code == 405  # Method Not Allowed — path exists (GET /scopes) but not POST
 
 
 def test_post_idempotent_existing():
     """POST on existing scope must return 200, never 409."""
     existing = _make_scope()
     with patch("app.services.scope_service.create_scope", return_value=existing):
-        r = client.post("/api/v1/scopes", json=_make_scope_dict())
+        r = client.post("/api/v1/scopes/10.20.30.0", json=_make_scope_dict())
     assert r.status_code == 200
 
 
@@ -261,7 +267,7 @@ def test_powershell_error_500():
         "app.services.scope_service.create_scope",
         side_effect=PowerShellError("Add-DhcpServerv4Scope", "Access denied", 1),
     ):
-        r = client.post("/api/v1/scopes", json=_make_scope_dict())
+        r = client.post("/api/v1/scopes/10.20.30.0", json=_make_scope_dict())
     assert r.status_code == 500
     body = r.json()
     assert "ps_error" in body

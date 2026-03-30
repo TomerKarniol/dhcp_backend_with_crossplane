@@ -162,53 +162,12 @@ def list_scopes(
 
 
 # ---------------------------------------------------------------------------
-# POST /scopes
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/scopes",
-    response_model=DhcpScopePayload,
-    status_code=status.HTTP_200_OK,
-    summary="Create a DHCP scope",
-    description="""
-Create a new DHCP scope on the Windows DHCP server.
-
-**Idempotent**: If the scope already exists, this endpoint returns the current state
-with HTTP 200 — it does NOT return 409. Crossplane may retry POST if the first attempt
-times out before it can write the `external-create-pending` annotation; retries must
-be harmless.
-
-**Execution order**:
-1. `Add-DhcpServerv4Scope` (skipped if scope already exists)
-2. `Set-DhcpServerv4OptionValue` — sets gateway, DNS servers, DNS domain
-3. `Add-DhcpServerv4ExclusionRange` — one call per exclusion entry
-4. Failover setup (if `failover` is not null)
-5. `Invoke-DhcpServerv4FailoverReplication` (if failover was configured)
-6. Returns full current state (same shape as GET response)
-""",
-    responses={
-        status.HTTP_200_OK: {
-            "description": (
-                "Scope created successfully, or already existed (idempotent). "
-                "Returns the full current scope state from the DHCP server."
-            ),
-        },
-        **_RESPONSES_COMMON,
-    },
-)
-def create_scope(
-    payload: DhcpScopePayload,
-    _: None = Depends(_verify_token),
-) -> DhcpScopePayload:
-    logger.info("POST /scopes network=%s", payload.network)
-    return scope_service.create_scope(payload)
-
-
-# ---------------------------------------------------------------------------
 # POST /scopes/{scope_id}  — used by Crossplane provider-http
 # ---------------------------------------------------------------------------
-# provider-http issues all lifecycle operations (observe/create/update/delete)
-# to the SAME URL: /api/v1/scopes/{network}. This alias lets POST work there.
+# All scope lifecycle operations (observe/create/update/delete) are driven from
+# Git via Helm + Crossplane provider-http.  Direct API access is intentionally
+# not supported: the only write entry-point is this scope-specific URL, which
+# provider-http uses for all verbs (GET/POST/PUT/DELETE) against the same path.
 
 @router.post(
     "/scopes/{scope_id}",

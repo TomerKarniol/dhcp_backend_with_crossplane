@@ -262,7 +262,7 @@ class TestRouteLevelProtection:
             "dnsServers": [], "dnsDomain": "", "exclusions": [], "failover": None,
         }
         with patch("app.services.dhcp_env.validate_dhcp_environment", side_effect=exc):
-            r = client.post("/api/v1/scopes", json=payload)
+            r = client.post("/api/v1/scopes/10.20.30.0", json=payload)
         assert r.status_code == 503
 
     def test_delete_route_also_protected(self):

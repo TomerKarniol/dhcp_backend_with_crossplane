@@ -481,3 +481,92 @@ def test_failover_mode_switch_loadbalance_to_hotstandby_standby_role_triggers_re
     ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
     assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands)
     assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
+
+
+# ---------------------------------------------------------------------------
+# Same-mode mutable updates: only mode-relevant fields trigger Set
+# ---------------------------------------------------------------------------
+
+def _make_lb_failover(**overrides):
+    """Minimal valid LoadBalance failover."""
+    base = dict(
+        partnerServer="dhcp02.lab.local",
+        relationshipName="mce1-failover",
+        mode="LoadBalance",
+        loadBalancePercent=50,
+        maxClientLeadTimeMinutes=60,
+        sharedSecret=None,
+    )
+    base.update(overrides)
+    return DhcpFailover(**base)
+
+
+def test_loadbalance_percent_change_triggers_set():
+    """Changing loadBalancePercent within LoadBalance must use Set-DhcpServerv4Failover."""
+    current = _make_scope(failover=_make_lb_failover(loadBalancePercent=50))
+    desired = _make_scope(failover=_make_lb_failover(loadBalancePercent=70))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope("10.20.30.0", desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
+    set_cmd = next(c for c in ps_commands if "Set-DhcpServerv4Failover" in c)
+    assert "-LoadBalancePercent 70" in set_cmd
+    assert "-ReservePercent" not in set_cmd
+    assert "-ServerRole" not in set_cmd
+
+
+def test_loadbalance_unchanged_no_calls():
+    """Identical LoadBalance config (including normalized fields) must produce no cmdlets."""
+    failover = _make_lb_failover(loadBalancePercent=50)
+    current = _make_scope(failover=failover)
+    desired = _make_scope(failover=_make_lb_failover(loadBalancePercent=50))
+
+    calls = _run_update(current, desired)
+    ps_commands = [c.args[0] for c in calls if c.args]
+    assert not any("Failover" in cmd for cmd in ps_commands), (
+        "No failover cmdlets expected when LoadBalance config is unchanged"
+    )
+
+
+def test_hotstandby_role_change_triggers_recreate():
+    """Changing serverRole within HotStandby is identity-level — must remove + recreate."""
+    current = _make_scope(failover=_make_failover(mode="HotStandby", serverRole="Active"))
+    desired = _make_scope(failover=_make_failover(mode="HotStandby", serverRole="Standby"))
+
+    from app.services import scope_service
+    with (
+        patch("app.services.scope_service.assemble_scope_state") as mock_assemble,
+        patch("app.services.scope_service.run_ps") as mock_ps,
+    ):
+        mock_assemble.side_effect = [current, desired]
+        mock_ps.return_value = None
+        scope_service.update_scope("10.20.30.0", desired)
+
+    ps_commands = [c.args[0] for c in mock_ps.call_args_list if c.args]
+    assert any("Remove-DhcpServerv4FailoverScope" in cmd for cmd in ps_commands)
+    assert not any("Set-DhcpServerv4Failover" in cmd for cmd in ps_commands)
+
+
+def test_normalized_fields_do_not_trigger_spurious_update():
+    """Normalized cross-mode fields must never cause a false-positive Set call.
+
+    When mode is LoadBalance, reservePercent is always 0 and serverRole is always
+    Active on both sides.  Comparing them would always be 0==0 / Active==Active,
+    which is harmless — but this test proves no cmdlet fires at all.
+    """
+    current = _make_scope(failover=_make_lb_failover(loadBalancePercent=50))
+    desired = _make_scope(failover=_make_lb_failover(loadBalancePercent=50))
+
+    calls = _run_update(current, desired)
+    ps_commands = [c.args[0] for c in calls if c.args]
+    assert ps_commands == [], (
+        "No PowerShell calls expected — identical LoadBalance config with normalized fields"
+    )

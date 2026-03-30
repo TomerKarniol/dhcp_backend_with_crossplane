@@ -335,25 +335,19 @@ def _handle_failover_diff(
         _remove_scope_from_failover(scope_id, current.relationshipName)
         return
 
-    # Both exist — check identity fields first.
-    # These fields cannot be changed in-place on a live relationship; remove + recreate is
-    # the only safe operation.
-    #
-    # mode is identity-level: Set-DhcpServerv4Failover cannot change mode safely because
-    # -ServerRole is not a settable parameter.  Switching LoadBalance→HotStandby via Set
-    # leaves role semantics undefined; switching HotStandby→LoadBalance via Set passes
-    # -ServerRole to a mode that does not accept it.  Always remove + recreate on mode change.
-    identity_changed = (
-        current.relationshipName != desired.relationshipName
-        or current.partnerServer != desired.partnerServer
-        or current.mode != desired.mode
-        or current.serverRole != desired.serverRole
-    )
-    if identity_changed:
+    # ---- Step 1: mode change is always remove + recreate ------------------
+    # Every other field (serverRole, reservePercent, loadBalancePercent) has
+    # mode-specific semantics.  Comparing them across modes is meaningless:
+    #   • serverRole is normalized to "Active" for LoadBalance — comparing it
+    #     against a HotStandby value of "Standby" would fire the wrong check.
+    #   • reservePercent is normalized to 0 for LoadBalance — comparing it
+    #     against a HotStandby value is noise.
+    #   • loadBalancePercent is normalized to 0 for HotStandby — same problem.
+    # Isolating the mode check here prevents all those cross-mode false signals.
+    if current.mode != desired.mode:
         logger.info(
-            "Scope %s: failover identity fields changed — removing relationship '%s' and recreating",
-            scope_id,
-            current.relationshipName,
+            "Scope %s: failover mode changed %s→%s — removing relationship '%s' and recreating",
+            scope_id, current.mode, desired.mode, current.relationshipName,
         )
         _remove_scope_from_failover(scope_id, current.relationshipName)
         _setup_failover(scope_id, desired)
@@ -363,20 +357,49 @@ def _handle_failover_diff(
         )
         return
 
-    # Check mutable params (relationship is indexed by current.relationshipName which equals
-    # desired.relationshipName at this point — identity check above guarantees equality).
-    mutable_changed = (
-        current.mode != desired.mode
-        or current.reservePercent != desired.reservePercent
-        or current.loadBalancePercent != desired.loadBalancePercent
-        or current.maxClientLeadTimeMinutes != desired.maxClientLeadTimeMinutes
-        or current.sharedSecret != desired.sharedSecret
+    # ---- Step 2: same-mode structural identity ----------------------------
+    # relationshipName, partnerServer, and (for HotStandby) serverRole cannot
+    # be changed in-place; Set-DhcpServerv4Failover does not accept -ServerRole.
+    # serverRole is only meaningful for HotStandby — LoadBalance always normalises
+    # it to "Active" so comparing it there adds no signal.
+    identity_changed = (
+        current.relationshipName != desired.relationshipName
+        or current.partnerServer != desired.partnerServer
+        or (current.mode == "HotStandby" and current.serverRole != desired.serverRole)
     )
+    if identity_changed:
+        logger.info(
+            "Scope %s: failover identity fields changed — removing relationship '%s' and recreating",
+            scope_id, current.relationshipName,
+        )
+        _remove_scope_from_failover(scope_id, current.relationshipName)
+        _setup_failover(scope_id, desired)
+        run_ps(
+            f"Invoke-DhcpServerv4FailoverReplication -ScopeId {scope_id} -Force",
+            parse_json=False,
+        )
+        return
+
+    # ---- Step 3: same-mode mutable params ---------------------------------
+    # Compare only the fields that are meaningful for the current mode.
+    # Comparing cross-mode fields (e.g. reservePercent when mode is LoadBalance)
+    # would always be 0==0, adding noise and masking real differences.
+    if current.mode == "HotStandby":
+        mutable_changed = (
+            current.reservePercent != desired.reservePercent
+            or current.maxClientLeadTimeMinutes != desired.maxClientLeadTimeMinutes
+            or current.sharedSecret != desired.sharedSecret
+        )
+    else:  # LoadBalance
+        mutable_changed = (
+            current.loadBalancePercent != desired.loadBalancePercent
+            or current.maxClientLeadTimeMinutes != desired.maxClientLeadTimeMinutes
+            or current.sharedSecret != desired.sharedSecret
+        )
     if mutable_changed:
         logger.info("Scope %s: updating failover params", scope_id)
         cmd = (
             f'Set-DhcpServerv4Failover -Name "{_ps_str(current.relationshipName)}" '
-            f"-Mode {desired.mode} "
             f"-MaxClientLeadTime (New-TimeSpan -Minutes {desired.maxClientLeadTimeMinutes})"
         )
         if desired.mode == "HotStandby":
